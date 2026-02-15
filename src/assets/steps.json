@@ -1,0 +1,42 @@
+{
+    "phases": [
+        {
+            "id": 1,
+            "name": "环境划分",
+            "description": "水平方向划分世界环境区域",
+            "sub_steps": [
+                {
+                    "id": "1.0",
+                    "name": "海洋边界",
+                    "description": "在世界两侧放置海洋环境",
+                    "doc_url": null
+                },
+                {
+                    "id": "1.1",
+                    "name": "内陆划分",
+                    "description": "根据权重随机分配各环境区域",
+                    "doc_url": null
+                }
+            ]
+        },
+        {
+            "id": 2,
+            "name": "地形生成",
+            "description": "为每个环境生成基础地表轮廓",
+            "sub_steps": [
+                {
+                    "id": "2.0",
+                    "name": "基础地势",
+                    "description": "使用随机游走生成地表高度线",
+                    "doc_url": null
+                },
+                {
+                    "id": "2.1",
+                    "name": "地势起伏",
+                    "description": "叠加噪声产生自然地形变化",
+                    "doc_url": null
+                }
+            ]
+        }
+    ]
+}
