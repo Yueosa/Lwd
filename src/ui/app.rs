@@ -12,6 +12,7 @@ use crate::core::world::{World, WorldProfile};
 use crate::generation::{build_pipeline, GenerationPipeline};
 use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image};
 use crate::rendering::viewport::ViewportState;
+use crate::ui::algo_config::show_algo_config_window;
 use crate::ui::canvas_view::show_canvas;
 use crate::ui::control_panel::{show_control_panel, ControlAction, WorldSizeSelection};
 use crate::ui::layer_config::{show_layer_config_window, merge_runtime_field};
@@ -46,6 +47,7 @@ pub struct LianWorldApp {
     show_biome_overlay: bool,
     show_layer_overlay: bool,
     show_layer_config: bool,
+    show_algo_config: bool,
 }
 
 impl LianWorldApp {
@@ -101,6 +103,7 @@ impl LianWorldApp {
             show_biome_overlay: saved_biome_ov,
             show_layer_overlay: saved_layer_ov,
             show_layer_config: false,
+            show_algo_config: false,
         };
 
         // 根据恢复的 world_size 切换
@@ -417,6 +420,22 @@ impl eframe::App for LianWorldApp {
                     self.world.width, self.world.height
                 ));
             });
+
+        // ── algo config window ──
+        if action.open_step_config {
+            self.show_algo_config = true;
+        }
+
+        if self.show_algo_config {
+            if let Some((_idx, algo)) = self.pipeline.current_algorithm_mut() {
+                let _changed = show_algo_config_window(
+                    ctx,
+                    &mut self.show_algo_config,
+                    algo,
+                );
+                // 参数变更后重新生成时会自动生效（通过 replay）
+            }
+        }
 
         // ── layer config window ──
         if action.open_layer_config {
