@@ -5,8 +5,6 @@
 //! 这是一个独立的算法模块，通过 [`PhaseAlgorithm`] trait 向引擎声明自身。
 //! 引擎不感知此模块内部逻辑，只通过 `meta()` / `execute()` / `get_params()` / `set_params()` 交互。
 
-use std::cell::Cell;
-
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -83,8 +81,8 @@ pub struct BiomeDivisionAlgorithm {
     desert_id: BiomeId,
     /// 可调参数
     params: BiomeDivisionParams,
-    /// 运行时状态：丛林在左侧还是右侧（步骤间传递）
-    jungle_on_left: Cell<Option<bool>>,
+    /// 运行时状态：丛林在左侧还是右侧（via shared state）
+    jungle_on_left: Option<bool>,
 }
 
 impl BiomeDivisionAlgorithm {
@@ -96,7 +94,7 @@ impl BiomeDivisionAlgorithm {
             snow_id: biome_id_by_key(biome_definitions, "snow").unwrap_or(4),
             desert_id: biome_id_by_key(biome_definitions, "desert").unwrap_or(3),
             params: BiomeDivisionParams::default(),
-            jungle_on_left: Cell::new(None),
+            jungle_on_left: None,
         }
     }
 
@@ -151,9 +149,9 @@ impl BiomeDivisionAlgorithm {
     }
 
     /// 4. 丛林生成
-    fn step_jungle(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
+    fn step_jungle(&mut self, ctx: &mut RuntimeContext) -> Result<(), String> {
         let jungle_on_left: bool = ctx.rng.r#gen();
-        self.jungle_on_left.set(Some(jungle_on_left));
+        self.jungle_on_left = Some(jungle_on_left);
 
         let bm = ctx.biome_map.as_mut().ok_or("需先执行森林初始化")?;
         let w = bm.width as f64;
@@ -176,7 +174,7 @@ impl BiomeDivisionAlgorithm {
 
     /// 5. 雪原生成（梯形）
     fn step_snow(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
-        let snow_on_left = !self.jungle_on_left.get().unwrap_or(true);
+        let snow_on_left = !self.jungle_on_left.unwrap_or(true);
         let bm = ctx.biome_map.as_mut().ok_or("需先执行森林初始化")?;
         let w = bm.width as f64;
         let h = bm.height as f64;
@@ -301,17 +299,80 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     default: serde_json::json!(0.05),
                 },
                 ParamDef {
+                    key: "expand_min_ratio".to_string(),
+                    name: "森林扩展最小比例".to_string(),
+                    description: "森林扩展的最小宽度比例".to_string(),
+                    param_type: ParamType::Float { min: 0.01, max: 0.30 },
+                    default: serde_json::json!(0.08),
+                },
+                ParamDef {
+                    key: "expand_max_ratio".to_string(),
+                    name: "森林扩展最大比例".to_string(),
+                    description: "森林扩展的最大宽度比例".to_string(),
+                    param_type: ParamType::Float { min: 0.01, max: 0.40 },
+                    default: serde_json::json!(0.15),
+                },
+                ParamDef {
+                    key: "jungle_width_min".to_string(),
+                    name: "丛林宽度最小比例".to_string(),
+                    description: "丛林椭圆宽度的最小比例".to_string(),
+                    param_type: ParamType::Float { min: 0.05, max: 0.30 },
+                    default: serde_json::json!(0.12),
+                },
+                ParamDef {
+                    key: "jungle_width_max".to_string(),
+                    name: "丛林宽度最大比例".to_string(),
+                    description: "丛林椭圆宽度的最大比例".to_string(),
+                    param_type: ParamType::Float { min: 0.05, max: 0.40 },
+                    default: serde_json::json!(0.18),
+                },
+                ParamDef {
+                    key: "snow_top_ratio".to_string(),
+                    name: "雪原顶部宽度比例".to_string(),
+                    description: "雪原梯形顶部宽度比例".to_string(),
+                    param_type: ParamType::Float { min: 0.02, max: 0.25 },
+                    default: serde_json::json!(0.08),
+                },
+                ParamDef {
+                    key: "snow_bot_ratio".to_string(),
+                    name: "雪原底部宽度比例".to_string(),
+                    description: "雪原梯形底部宽度比例".to_string(),
+                    param_type: ParamType::Float { min: 0.05, max: 0.35 },
+                    default: serde_json::json!(0.16),
+                },
+                ParamDef {
+                    key: "desert_min_count".to_string(),
+                    name: "沙漠最少数量".to_string(),
+                    description: "随机生成的沙漠最少数量".to_string(),
+                    param_type: ParamType::Int { min: 0, max: 10 },
+                    default: serde_json::json!(1),
+                },
+                ParamDef {
                     key: "desert_max_count".to_string(),
                     name: "沙漠最多数量".to_string(),
                     description: "随机生成的沙漠最多数量".to_string(),
                     param_type: ParamType::Int { min: 0, max: 10 },
                     default: serde_json::json!(3),
                 },
+                ParamDef {
+                    key: "desert_width_min".to_string(),
+                    name: "沙漠宽度最小比例".to_string(),
+                    description: "沙漠椭圆宽度的最小比例".to_string(),
+                    param_type: ParamType::Float { min: 0.01, max: 0.20 },
+                    default: serde_json::json!(0.05),
+                },
+                ParamDef {
+                    key: "desert_width_max".to_string(),
+                    name: "沙漠宽度最大比例".to_string(),
+                    description: "沙漠椭圆宽度的最大比例".to_string(),
+                    param_type: ParamType::Float { min: 0.02, max: 0.30 },
+                    default: serde_json::json!(0.10),
+                },
             ],
         }
     }
 
-    fn execute(&self, step_index: usize, ctx: &mut RuntimeContext) -> Result<(), String> {
+    fn execute(&mut self, step_index: usize, ctx: &mut RuntimeContext) -> Result<(), String> {
         match step_index {
             0 => self.step_forest_init(ctx),
             1 => self.step_ocean_border(ctx),
@@ -332,5 +393,9 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
         if let Ok(p) = serde_json::from_value::<BiomeDivisionParams>(params.clone()) {
             self.params = p;
         }
+    }
+
+    fn on_reset(&mut self) {
+        self.jungle_on_left = None;
     }
 }
