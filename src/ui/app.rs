@@ -14,7 +14,7 @@ use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_
 use crate::rendering::viewport::ViewportState;
 use crate::ui::canvas_view::show_canvas;
 use crate::ui::control_panel::{show_control_panel, ControlAction, WorldSizeSelection};
-use crate::ui::layer_config::show_layer_config_window;
+use crate::ui::layer_config::{show_layer_config_window, merge_runtime_field};
 use crate::ui::status_bar::show_status_bar;
 
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc");
@@ -79,13 +79,16 @@ impl LianWorldApp {
             egui::TextureOptions::NEAREST,
         ));
 
-        Self {
+        // 从 runtime.json 恢复 UI 状态
+        let (saved_size, saved_biome_ov, saved_layer_ov) = load_runtime_ui_state();
+
+        let mut app = Self {
             world_cfg,
             blocks,
             biomes,
             color_lut,
             block_names,
-            world_size: WorldSizeSelection::Small,
+            world_size: saved_size,
             world,
             world_profile,
             pipeline,
@@ -93,10 +96,16 @@ impl LianWorldApp {
             texture,
             texture_dirty: false,
             last_status: "世界初始化完成".to_string(),
-            show_biome_overlay: false,
-            show_layer_overlay: true,
+            show_biome_overlay: saved_biome_ov,
+            show_layer_overlay: saved_layer_ov,
             show_layer_config: false,
-        }
+        };
+
+        // 根据恢复的 world_size 切换
+        app.apply_world_size_change();
+        app.refresh_texture_if_dirty(&cc.egui_ctx);
+
+        app
     }
 
     // ── world size change ───────────────────────────────────
@@ -311,6 +320,64 @@ fn load_runtime_layers(layers: &mut [crate::core::layer::LayerDefinition]) {
                 }
             }
         }
+    }
+}
+
+/// 从 runtime.json 加载 UI 状态 (world_size, overlay 开关)
+fn load_runtime_ui_state() -> (WorldSizeSelection, bool, bool) {
+    use std::fs;
+    
+    let mut size = WorldSizeSelection::Small;
+    let mut biome_ov = false;
+    let mut layer_ov = true;
+    
+    let runtime_path = "generation.runtime.json";
+    if let Ok(content) = fs::read_to_string(runtime_path) {
+        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(ui) = config.get("ui").and_then(|v| v.as_object()) {
+                if let Some(s) = ui.get("world_size").and_then(|v| v.as_str()) {
+                    size = match s {
+                        "medium" => WorldSizeSelection::Medium,
+                        "large" => WorldSizeSelection::Large,
+                        _ => WorldSizeSelection::Small,
+                    };
+                }
+                if let Some(b) = ui.get("show_biome_overlay").and_then(|v| v.as_bool()) {
+                    biome_ov = b;
+                }
+                if let Some(l) = ui.get("show_layer_overlay").and_then(|v| v.as_bool()) {
+                    layer_ov = l;
+                }
+            }
+        }
+    }
+    
+    (size, biome_ov, layer_ov)
+}
+
+/// 保存 UI 状态 (world_size, overlay 开关) 到 runtime.json
+fn save_runtime_ui_state(
+    world_size: WorldSizeSelection,
+    show_biome_overlay: bool,
+    show_layer_overlay: bool,
+) {
+    use serde_json::json;
+    
+    let size_str = match world_size {
+        WorldSizeSelection::Small => "small",
+        WorldSizeSelection::Medium => "medium",
+        WorldSizeSelection::Large => "large",
+    };
+    
+    let ui_state = json!({
+        "world_size": size_str,
+        "show_biome_overlay": show_biome_overlay,
+        "show_layer_overlay": show_layer_overlay,
+    });
+    
+    if let Ok(config) = merge_runtime_field("ui", ui_state) {
+        let content = serde_json::to_string_pretty(&config).unwrap_or_default();
+        let _ = std::fs::write("generation.runtime.json", content);
     }
 }
 

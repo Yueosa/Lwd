@@ -228,7 +228,6 @@ fn reset_to_default(layers: &mut [LayerDefinition]) {
 /// 保存层级配置到 generation.runtime.json
 fn save_to_runtime(layers: &[LayerDefinition]) -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashMap;
-    use std::fs;
     use serde_json::json;
     
     // 构建层级配置 JSON
@@ -243,7 +242,21 @@ fn save_to_runtime(layers: &[LayerDefinition]) -> Result<(), Box<dyn std::error:
         );
     }
     
-    // 尝试读取现有的 runtime.json
+    // 读取现有的 runtime.json 并合并 layers 字段
+    let config = merge_runtime_field("layers", json!(layers_config))?;
+    
+    // 写入文件（格式化输出）
+    let content = serde_json::to_string_pretty(&config)?;
+    std::fs::write("generation.runtime.json", content)?;
+    
+    Ok(())
+}
+
+/// 读取 generation.runtime.json，合并一个字段，返回完整的 JSON Value
+pub fn merge_runtime_field(key: &str, value: serde_json::Value) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use std::fs;
+    use serde_json::json;
+    
     let runtime_path = "generation.runtime.json";
     let mut config = if let Ok(content) = fs::read_to_string(runtime_path) {
         serde_json::from_str::<serde_json::Value>(&content).unwrap_or(json!({}))
@@ -251,14 +264,9 @@ fn save_to_runtime(layers: &[LayerDefinition]) -> Result<(), Box<dyn std::error:
         json!({})
     };
     
-    // 更新 layers 配置
     if let Some(obj) = config.as_object_mut() {
-        obj.insert("layers".to_string(), json!(layers_config));
+        obj.insert(key.to_string(), value);
     }
     
-    // 写入文件（格式化输出）
-    let content = serde_json::to_string_pretty(&config)?;
-    fs::write(runtime_path, content)?;
-    
-    Ok(())
+    Ok(config)
 }
