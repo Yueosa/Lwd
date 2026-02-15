@@ -300,6 +300,34 @@ impl GenerationPipeline {
         Ok(())
     }
 
+    // ── 快照支持 ────────────────────────────────────────────
+
+    /// 收集当前运行状态为快照
+    pub fn collect_snapshot(
+        &self,
+        world_size: &str,
+        layers: &[crate::core::layer::LayerDefinition],
+    ) -> super::snapshot::WorldSnapshot {
+        super::snapshot::WorldSnapshot::collect(
+            self.seed,
+            world_size,
+            layers,
+            &self.algorithms,
+        )
+    }
+
+    /// 从快照恢复算法参数（seed 和 world_size 由调用方处理）
+    pub fn restore_from_snapshot(&mut self, snapshot: &super::snapshot::WorldSnapshot) {
+        for algo_state in &snapshot.algorithms {
+            // 按 algorithm_id 匹配并恢复参数
+            for algo in &mut self.algorithms {
+                if algo.meta().id == algo_state.algorithm_id {
+                    algo.set_params(&algo_state.params);
+                }
+            }
+        }
+    }
+
     // ── UI 信息 ─────────────────────────────────────────────
 
     /// 构建控制面板需要的阶段/步骤快照列表
