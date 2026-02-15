@@ -46,17 +46,15 @@
 
 每次世界数据变更后需重建整个 `ColorImage`（大世界 8400×2400 = ~80MB RGBA）。
 
+> **部分缓解**：增量执行（`running_to_end`）期间，通过 `inc_frame_counter` 每 5 帧才刷新一次纹理，大幅减少 GPU 上传频率。但单次刷新仍为全帧重建。
+
 **优化方向**：
 - 脏区域追踪：只重建变更的矩形区域
 - GPU 纹理更新：直接修改纹理子区域而非整帧替换
 
-### phase_info_list 每帧分配
+### ~~phase_info_list 每帧分配~~ ✅ 已解决
 
-`pipeline.phase_info_list()` 每帧调用 `meta()`，分配大量 `String` / `Vec`。
-
-**优化方向**：
-- 缓存 `Vec<PhaseInfo>`，仅在步骤变更时重建
-- 或让 `meta()` 返回 `&'static` 引用
+`phase_info_list()` 现已通过 `cached_phase_info` + dirty flag 实现缓存，仅在步骤变化时重建。方法签名变为 `&mut self -> &[PhaseInfo]`。`total_sub_steps()` 和 `executed_sub_steps()` 通过 `step_counts` / `total_steps_cache` 实现 O(1) 查询。
 
 ### 增量执行帧预算
 
