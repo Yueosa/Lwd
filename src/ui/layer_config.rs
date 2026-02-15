@@ -247,7 +247,7 @@ fn save_to_runtime(layers: &[LayerDefinition]) -> Result<(), Box<dyn std::error:
     
     // 写入文件（格式化输出）
     let content = serde_json::to_string_pretty(&config)?;
-    std::fs::write("generation.runtime.json", content)?;
+    std::fs::write(super::app::runtime_json_path(), content)?;
     
     Ok(())
 }
@@ -257,7 +257,7 @@ pub fn merge_runtime_field(key: &str, value: serde_json::Value) -> Result<serde_
     use std::fs;
     use serde_json::json;
     
-    let runtime_path = "generation.runtime.json";
+    let runtime_path = super::app::runtime_json_path();
     let mut config = if let Ok(content) = fs::read_to_string(runtime_path) {
         serde_json::from_str::<serde_json::Value>(&content).unwrap_or(json!({}))
     } else {
