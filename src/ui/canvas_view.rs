@@ -1,4 +1,4 @@
-use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Ui, Vec2};
+use egui::{Color32, ColorImage, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2};
 
 use crate::core::biome::{BiomeDefinition, BiomeMap};
 use crate::core::layer::LayerDefinition;
@@ -8,6 +8,96 @@ use crate::rendering::viewport::ViewportState;
 pub struct HoverInfo {
     pub x: u32,
     pub y: u32,
+}
+
+/// 从 2D BiomeMap 生成半透明 overlay 纹理
+fn biome_overlay_image(
+    biome_map: &BiomeMap,
+    biome_definitions: &[BiomeDefinition],
+) -> ColorImage {
+    let w = biome_map.width as usize;
+    let h = biome_map.height as usize;
+    let mut pixels = vec![Color32::TRANSPARENT; w * h];
+
+    for y in 0..h {
+        for x in 0..w {
+            let bid = biome_map.get(x as u32, y as u32);
+            if let Some(bdef) = biome_definitions.iter().find(|b| b.id == bid) {
+                let c = bdef.overlay_color;
+                pixels[y * w + x] = Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            }
+        }
+    }
+
+    ColorImage {
+        size: [w, h],
+        pixels,
+    }
+}
+
+/// 在 biome overlay 上找到各连通区域的大致中心并标注名称
+fn draw_biome_labels(
+    painter: &egui::Painter,
+    biome_map: &BiomeMap,
+    biome_definitions: &[BiomeDefinition],
+    image_rect: Rect,
+    zoom: f32,
+) {
+    // 对每种 biome，找到它的 bounding box 中心来放置标签
+    // 简单方法：统计 x/y 的 min/max
+    use std::collections::HashMap;
+    struct Bounds {
+        min_x: u32,
+        max_x: u32,
+        min_y: u32,
+        max_y: u32,
+    }
+    let mut bounds_map: HashMap<u8, Bounds> = HashMap::new();
+
+    // 为了性能，采样而不是遍历全部像素（每16行/列采样一次）
+    let step = 8u32;
+    let w = biome_map.width;
+    let h = biome_map.height;
+    let mut y = 0;
+    while y < h {
+        let mut x = 0;
+        while x < w {
+            let bid = biome_map.get(x, y);
+            bounds_map
+                .entry(bid)
+                .and_modify(|b| {
+                    b.min_x = b.min_x.min(x);
+                    b.max_x = b.max_x.max(x);
+                    b.min_y = b.min_y.min(y);
+                    b.max_y = b.max_y.max(y);
+                })
+                .or_insert(Bounds {
+                    min_x: x,
+                    max_x: x,
+                    min_y: y,
+                    max_y: y,
+                });
+            x += step;
+        }
+        y += step;
+    }
+
+    for (bid, b) in &bounds_map {
+        if let Some(bdef) = biome_definitions.iter().find(|d| d.id == *bid) {
+            let cx = ((b.min_x + b.max_x) as f32 / 2.0) * zoom + image_rect.left();
+            let cy = ((b.min_y + b.max_y) as f32 / 2.0) * zoom + image_rect.top();
+            let pos = Pos2::new(cx, cy);
+            if image_rect.contains(pos) {
+                painter.text(
+                    pos,
+                    egui::Align2::CENTER_CENTER,
+                    &bdef.name,
+                    egui::FontId::proportional(14.0),
+                    Color32::WHITE,
+                );
+            }
+        }
+    }
 }
 
 pub fn show_canvas(
@@ -21,6 +111,7 @@ pub fn show_canvas(
     layers: &[LayerDefinition],
     show_biome_overlay: bool,
     show_layer_overlay: bool,
+    biome_overlay_texture: &mut Option<TextureHandle>,
 ) -> Option<HoverInfo> {
     let available = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(available, Sense::click_and_drag());
@@ -62,40 +153,28 @@ pub fn show_canvas(
 
     // ── biome overlay ──────────────────────────────────────────
     if show_biome_overlay {
-        if let Some(biome_map) = biome_map {
-            for region in biome_map.regions() {
-                // 查找对应的 BiomeDefinition
-                let biome_def = biome_definitions.iter().find(|b| b.id == region.biome_id);
-                
-                if let Some(biome) = biome_def {
-                    let rgba = biome.overlay_color;
-                    let color = Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
-                    
-                    let x0 = image_rect.left() + region.start_x as f32 * viewport.zoom;
-                    let x1 = image_rect.left() + region.end_x as f32 * viewport.zoom;
-                    let y0 = image_rect.top();
-                    let y1 = image_rect.bottom();
-                    
-                    let region_rect = Rect::from_min_max(
-                        Pos2::new(x0, y0),
-                        Pos2::new(x1, y1),
-                    );
-                    
-                    painter.rect_filled(region_rect, 0.0, color);
-                    
-                    // 绘制环境名称（在区域中心）
-                    let center_x = (x0 + x1) / 2.0;
-                    let center_y = (y0 + y1) / 2.0;
-                    let text_pos = Pos2::new(center_x, center_y);
-                    painter.text(
-                        text_pos,
-                        egui::Align2::CENTER_CENTER,
-                        &biome.name,
-                        egui::FontId::proportional(16.0),
-                        Color32::WHITE,
-                    );
-                }
+        if let Some(bm) = biome_map {
+            // 惰性生成 biome overlay 纹理
+            if biome_overlay_texture.is_none() {
+                let img = biome_overlay_image(bm, biome_definitions);
+                *biome_overlay_texture = Some(ui.ctx().load_texture(
+                    "biome_overlay",
+                    img,
+                    TextureOptions::NEAREST,
+                ));
             }
+
+            if let Some(ov_tex) = biome_overlay_texture {
+                painter.image(
+                    ov_tex.id(),
+                    image_rect,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+
+            // 绘制环境名称标签
+            draw_biome_labels(&painter, bm, biome_definitions, image_rect, viewport.zoom);
         }
     }
 

@@ -9,7 +9,7 @@ use crate::config::world::{load_world_config, WorldConfig};
 use crate::core::biome::{build_biome_definitions, BiomeDefinition};
 use crate::core::block::{build_block_definitions, BlockDefinition};
 use crate::core::world::{World, WorldProfile};
-use crate::generation::{build_default_pipeline, GenerationPipeline};
+use crate::generation::{build_pipeline, GenerationPipeline};
 use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image};
 use crate::rendering::viewport::ViewportState;
 use crate::ui::canvas_view::show_canvas;
@@ -39,6 +39,7 @@ pub struct LianWorldApp {
     viewport: ViewportState,
     texture: Option<TextureHandle>,
     texture_dirty: bool,
+    biome_overlay_texture: Option<TextureHandle>,
 
     // ── UI ──
     last_status: String,
@@ -70,7 +71,7 @@ impl LianWorldApp {
         let world = world_profile.create_world();
 
         let seed = rand::random::<u64>();
-        let pipeline = build_default_pipeline(seed, biomes.clone());
+        let pipeline = build_pipeline(seed, biomes.clone());
 
         let image = world_to_color_image(&world, &color_lut);
         let texture = Some(cc.egui_ctx.load_texture(
@@ -95,6 +96,7 @@ impl LianWorldApp {
             viewport: ViewportState::default(),
             texture,
             texture_dirty: false,
+            biome_overlay_texture: None,
             last_status: "世界初始化完成".to_string(),
             show_biome_overlay: saved_biome_ov,
             show_layer_overlay: saved_layer_ov,
@@ -147,6 +149,8 @@ impl LianWorldApp {
             image,
             egui::TextureOptions::NEAREST,
         ));
+        // 同时失效 biome overlay（每次步骤执行后重建）
+        self.biome_overlay_texture = None;
         self.texture_dirty = false;
     }
 
@@ -464,7 +468,7 @@ impl eframe::App for LianWorldApp {
         // ── central canvas ──
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(texture) = &self.texture {
-                let biome_map = self.pipeline.state().biome_map.as_ref();
+                let biome_map = self.pipeline.biome_map();
                 if let Some(hover) = show_canvas(
                     ui,
                     texture,
@@ -476,6 +480,7 @@ impl eframe::App for LianWorldApp {
                     &self.world_profile.layers,
                     self.show_biome_overlay,
                     self.show_layer_overlay,
+                    &mut self.biome_overlay_texture,
                 ) {
                     let idx = (hover.y * self.world.width + hover.x) as usize;
                     let block_id = self.world.tiles.get(idx).copied().unwrap_or(0);

@@ -145,7 +145,7 @@ pub fn show_control_panel(
                 };
                 let phase_label = format!(
                     "{phase_prefix} {}. {}",
-                    phase.phase_id, phase.name
+                    phase.display_index, phase.name
                 );
                 let resp = ui.colored_label(phase_color, &phase_label);
                 if resp.hovered() {
@@ -161,7 +161,7 @@ pub fn show_control_panel(
                     
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
-                        let sub_label = format!("{sub_prefix} {} {}", sub.id, sub.name);
+                        let sub_label = format!("{sub_prefix} {} {}", sub.display_id, sub.name);
                         let resp = ui.colored_label(sub_color, &sub_label);
                         
                         if resp.hovered() {
@@ -169,9 +169,6 @@ pub fn show_control_panel(
                                 ui.label(&sub.description);
                                 if let Some(url) = &sub.doc_url {
                                     ui.hyperlink_to("📖 查看算法文档", url);
-                                }
-                                if sub.has_config {
-                                    ui.label("⚙ 此步骤有可调参数");
                                 }
                             });
                         }
