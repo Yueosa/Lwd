@@ -38,6 +38,79 @@ impl World {
     pub fn new_air(width: u32, height: u32) -> Self {
         Self::new_filled(width, height, AIR_BLOCK_ID)
     }
+
+    // ── 安全访问接口 ──────────────────────────────────────
+
+    /// 获取 (x, y) 处的方块 ID，越界返回 None
+    #[inline]
+    pub fn get(&self, x: u32, y: u32) -> Option<u8> {
+        if x < self.width && y < self.height {
+            Some(self.tiles[(y * self.width + x) as usize])
+        } else {
+            None
+        }
+    }
+
+    /// 获取 (x, y) 处的方块 ID，越界返回 AIR_BLOCK_ID
+    #[inline]
+    pub fn get_or_air(&self, x: u32, y: u32) -> u8 {
+        self.get(x, y).unwrap_or(AIR_BLOCK_ID)
+    }
+
+    /// 设置 (x, y) 处的方块 ID，越界忽略
+    #[inline]
+    pub fn set(&mut self, x: u32, y: u32, block_id: u8) {
+        if x < self.width && y < self.height {
+            self.tiles[(y * self.width + x) as usize] = block_id;
+        }
+    }
+
+    /// 填充矩形区域 [x0, x1) × [y0, y1)
+    pub fn fill_rect(&mut self, x0: u32, y0: u32, x1: u32, y1: u32, block_id: u8) {
+        let xs = x0.min(self.width);
+        let xe = x1.min(self.width);
+        let ys = y0.min(self.height);
+        let ye = y1.min(self.height);
+        for y in ys..ye {
+            let row_start = (y * self.width) as usize;
+            for x in xs..xe {
+                self.tiles[row_start + x as usize] = block_id;
+            }
+        }
+    }
+
+    /// 填充垂直一列 [y_start, y_end)
+    pub fn fill_column(&mut self, x: u32, y_start: u32, y_end: u32, block_id: u8) {
+        if x >= self.width {
+            return;
+        }
+        let ys = y_start.min(self.height);
+        let ye = y_end.min(self.height);
+        for y in ys..ye {
+            self.tiles[(y * self.width + x) as usize] = block_id;
+        }
+    }
+
+    /// 遍历指定层级行范围 [y_start, y_end) 中的每个格子，调用闭包
+    pub fn for_each_in_rows<F>(&mut self, y_start: u32, y_end: u32, mut f: F)
+    where
+        F: FnMut(u32, u32, &mut u8), // (x, y, tile)
+    {
+        let ys = y_start.min(self.height);
+        let ye = y_end.min(self.height);
+        for y in ys..ye {
+            for x in 0..self.width {
+                let idx = (y * self.width + x) as usize;
+                f(x, y, &mut self.tiles[idx]);
+            }
+        }
+    }
+
+    /// 判断坐标是否在世界范围内
+    #[inline]
+    pub fn in_bounds(&self, x: u32, y: u32) -> bool {
+        x < self.width && y < self.height
+    }
 }
 
 impl WorldProfile {
