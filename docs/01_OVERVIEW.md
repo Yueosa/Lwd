@@ -1,8 +1,8 @@
 # 项目概览
 
-## LTwd — Lian Terraria World Generator
+## Lwd — Lian Terraria World Generator
 
-LTwd 是一个受 Terraria 启发的 **2D 世界生成工具**，使用 Rust 编写，基于 egui/eframe 图形框架提供桌面 GUI。
+Lwd 是一个受 Terraria 启发的 **2D 世界生成工具**，使用 Rust 编写，基于 egui/eframe 图形框架提供桌面 GUI。
 
 ### 定位
 
