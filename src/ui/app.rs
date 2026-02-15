@@ -8,7 +8,7 @@ use crate::config::world::{load_world_config, WorldConfig};
 use crate::core::block::{build_block_definitions, BlockDefinition};
 use crate::core::world::{World, WorldProfile};
 use crate::generation::{build_default_pipeline, GenerationPipeline};
-use crate::rendering::canvas::{build_color_map, world_to_color_image};
+use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image};
 use crate::rendering::viewport::ViewportState;
 use crate::ui::canvas_view::show_canvas;
 use crate::ui::control_panel::{show_control_panel, ControlAction, WorldSizeSelection};
@@ -20,7 +20,7 @@ pub struct LianWorldApp {
     // ── config (loaded once) ──
     world_cfg: WorldConfig,
     blocks: Vec<BlockDefinition>,
-    colors: HashMap<u8, Color32>,
+    color_lut: [Color32; 256],
     block_names: HashMap<u8, String>,
 
     // ── world state ──
@@ -48,7 +48,7 @@ impl LianWorldApp {
         let world_cfg = load_world_config().expect("world.json 加载失败");
 
         let blocks = build_block_definitions(&blocks_cfg);
-        let colors = build_color_map(&blocks);
+        let color_lut = build_color_lut(&build_color_map(&blocks));
         let block_names: HashMap<u8, String> =
             blocks.iter().map(|b| (b.id, b.name.clone())).collect();
 
@@ -59,7 +59,7 @@ impl LianWorldApp {
         let seed = rand::random::<u64>();
         let pipeline = build_default_pipeline(seed);
 
-        let image = world_to_color_image(&world, &colors);
+        let image = world_to_color_image(&world, &color_lut);
         let texture = Some(cc.egui_ctx.load_texture(
             "world_texture",
             image,
@@ -69,7 +69,7 @@ impl LianWorldApp {
         Self {
             world_cfg,
             blocks,
-            colors,
+            color_lut,
             block_names,
             world_size: WorldSizeSelection::Small,
             world,
@@ -113,7 +113,7 @@ impl LianWorldApp {
         if !self.texture_dirty {
             return;
         }
-        let image = world_to_color_image(&self.world, &self.colors);
+        let image = world_to_color_image(&self.world, &self.color_lut);
         self.texture = Some(ctx.load_texture(
             "world_texture",
             image,
@@ -179,12 +179,35 @@ impl LianWorldApp {
             }
         }
 
-        if action.regenerate {
+        // ── "重新初始化" = new seed + reset to step 0
+        if action.reset_and_step {
             let new_seed = rand::random::<u64>();
             self.pipeline.set_seed(new_seed);
             self.pipeline.reset_all(&mut self.world);
             self.texture_dirty = true;
-            self.last_status = format!("已重新生成 (seed: {new_seed})");
+            self.last_status = format!("已重置到第0步 (seed: {new_seed})");
+        }
+
+        // ── "一键生成" or "执行到底": run remaining steps
+        if action.run_all {
+            match self.pipeline.run_all(
+                &mut self.world,
+                &self.world_profile,
+                &self.blocks,
+            ) {
+                Ok(()) => {
+                    self.texture_dirty = true;
+                    self.last_status = format!(
+                        "全部步骤已完成 ({}/{})",
+                        self.pipeline.executed_count(),
+                        self.pipeline.total_steps()
+                    );
+                }
+                Err(e) => {
+                    self.texture_dirty = true;
+                    self.last_status = format!("生成失败: {e}");
+                }
+            }
         }
     }
 }
