@@ -9,7 +9,7 @@ use crate::config::world::{load_world_config, WorldConfig};
 use crate::core::biome::{build_biome_definitions, BiomeDefinition};
 use crate::core::block::{build_block_definitions, BlockDefinition};
 use crate::core::world::{World, WorldProfile};
-use crate::generation::{build_pipeline, GenerationPipeline};
+use crate::generation::{build_pipeline, GenerationPipeline, WorldSnapshot, export_png};
 use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image};
 use crate::rendering::viewport::ViewportState;
 use crate::ui::algo_config::show_algo_config_window;
@@ -115,12 +115,16 @@ impl LianWorldApp {
 
     // ── world size change ───────────────────────────────────
 
-    fn apply_world_size_change(&mut self) {
-        let target = match self.world_size {
+    fn world_size_key(&self) -> &'static str {
+        match self.world_size {
             WorldSizeSelection::Small => "small",
             WorldSizeSelection::Medium => "medium",
             WorldSizeSelection::Large => "large",
-        };
+        }
+    }
+
+    fn apply_world_size_change(&mut self) {
+        let target = self.world_size_key();
 
         if self.world_profile.size.key == target {
             return;
@@ -285,6 +289,115 @@ impl LianWorldApp {
                 Err(e) => {
                     self.texture_dirty = true;
                     self.last_status = format!("生成失败: {e}");
+                }
+            }
+        }
+
+        // ── 导出 PNG
+        if action.export_png {
+            let dialog = rfd::FileDialog::new()
+                .set_title("导出 PNG")
+                .set_file_name("world_export.png")
+                .add_filter("PNG 图片", &["png"]);
+            if let Some(path) = dialog.save_file() {
+                match export_png(&self.world, &self.color_lut, &path) {
+                    Ok(()) => {
+                        self.last_status = format!("PNG 已导出: {}", path.display());
+                    }
+                    Err(e) => {
+                        self.last_status = format!("PNG 导出失败: {e}");
+                    }
+                }
+            }
+        }
+
+        // ── 导出 .lwd
+        if action.export_lwd {
+            let snapshot = self.pipeline.collect_snapshot(
+                self.world_size_key(),
+                &self.world_profile.layers,
+            );
+            let dialog = rfd::FileDialog::new()
+                .set_title("导出世界存档")
+                .set_file_name("world_export.lwd")
+                .add_filter("Lian World 存档", &["lwd"]);
+            if let Some(path) = dialog.save_file() {
+                match snapshot.save_lwd(&path) {
+                    Ok(()) => {
+                        self.last_status = format!("存档已导出: {}", path.display());
+                    }
+                    Err(e) => {
+                        self.last_status = format!("存档导出失败: {e}");
+                    }
+                }
+            }
+        }
+
+        // ── 导入 .lwd
+        if action.import_lwd {
+            let dialog = rfd::FileDialog::new()
+                .set_title("导入世界存档")
+                .add_filter("Lian World 存档", &["lwd"]);
+            if let Some(path) = dialog.pick_file() {
+                match WorldSnapshot::load_lwd(&path) {
+                    Ok(snapshot) => {
+                        // 1) 恢复世界尺寸
+                        self.world_size = match snapshot.world_size.as_str() {
+                            "medium" => WorldSizeSelection::Medium,
+                            "large" => WorldSizeSelection::Large,
+                            _ => WorldSizeSelection::Small,
+                        };
+                        self.world_profile = WorldProfile::from_config(
+                            &self.world_cfg,
+                            &snapshot.world_size,
+                            None,
+                        )
+                        .expect("world size 配置非法");
+                        
+                        // 2) 恢复层级配置
+                        for layer in &mut self.world_profile.layers {
+                            if let Some(ov) = snapshot.layers.get(&layer.key) {
+                                layer.start_percent = ov.start_percent;
+                                layer.end_percent = ov.end_percent;
+                            }
+                        }
+                        
+                        self.world = self.world_profile.create_world();
+                        
+                        // 3) 恢复种子 + 算法参数
+                        self.pipeline.set_seed(snapshot.seed);
+                        self.pipeline.restore_from_snapshot(&snapshot);
+                        
+                        // 4) 重新执行全部步骤
+                        self.pipeline.reset_all(&mut self.world);
+                        match self.pipeline.run_all(
+                            &mut self.world,
+                            &self.world_profile,
+                            &self.blocks,
+                        ) {
+                            Ok(()) => {
+                                self.texture_dirty = true;
+                                self.viewport.reset();
+                                self.last_status = format!(
+                                    "已从存档恢复 (seed: {})",
+                                    snapshot.seed
+                                );
+                            }
+                            Err(e) => {
+                                self.texture_dirty = true;
+                                self.last_status = format!("存档恢复执行失败: {e}");
+                            }
+                        }
+                        
+                        save_runtime_ui_state(
+                            self.world_size,
+                            self.show_biome_overlay,
+                            self.show_layer_overlay,
+                        );
+                    }
+                    Err(e) => {
+                        self.last_status = format!("存档导入失败: {e}");
+                    }
                 }
             }
         }

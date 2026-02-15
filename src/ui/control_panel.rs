@@ -24,6 +24,12 @@ pub struct ControlAction {
     pub open_layer_config: bool,
     /// 打开当前步骤的算法配置面板
     pub open_step_config: bool,
+    /// 导出 PNG
+    pub export_png: bool,
+    /// 导出 .lwd 存档
+    pub export_lwd: bool,
+    /// 导入 .lwd 存档
+    pub import_lwd: bool,
 }
 
 impl ControlAction {
@@ -42,6 +48,9 @@ impl ControlAction {
             layer_overlay_toggled: false,
             open_layer_config: false,
             open_step_config: false,
+            export_png: false,
+            export_lwd: false,
+            import_lwd: false,
         }
     }
 }
@@ -201,8 +210,20 @@ pub fn show_control_panel(
     if ui.button("⚙ 当前步骤算法").on_hover_text("打开当前步骤的算法参数配置面板").clicked() {
         action.open_step_config = true;
     }
-    
-    ui.add_enabled(false, egui::Button::new("📸 导出 PNG"));
+
+    ui.separator();
+    ui.label("导出 / 导入");
+    if ui.button("📸 导出 PNG").on_hover_text("将当前世界画面导出为 PNG 图片").clicked() {
+        action.export_png = true;
+    }
+    ui.horizontal(|ui| {
+        if ui.button("💾 导出 .lwd").on_hover_text("保存世界快照（可完整复现）").clicked() {
+            action.export_lwd = true;
+        }
+        if ui.button("📂 导入 .lwd").on_hover_text("从存档文件恢复世界").clicked() {
+            action.import_lwd = true;
+        }
+    });
 
     ui.separator();
 
