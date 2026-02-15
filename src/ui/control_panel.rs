@@ -83,7 +83,7 @@ pub fn show_control_panel(
 ) -> ControlAction {
     let mut action = ControlAction::none();
 
-    ui.heading("🗺 Lian World");
+    ui.heading("  🗺 Lian World");
     ui.separator();
 
     // ── world size ──
