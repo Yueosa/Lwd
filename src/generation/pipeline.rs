@@ -59,6 +59,10 @@ pub struct PhaseInfo {
 pub struct GenerationPipeline {
     /// 已注册的算法模块（有序）
     algorithms: Vec<Box<dyn PhaseAlgorithm>>,
+    /// 每个算法模块的子步骤数缓存（避免每帧调用 meta()）
+    step_counts: Vec<usize>,
+    /// 总子步骤数缓存
+    total_steps_cache: usize,
     /// 主种子
     seed: u64,
     /// 共享的环境地图状态
@@ -70,42 +74,49 @@ pub struct GenerationPipeline {
     /// 当前执行位置：指向下一个要执行的子步骤
     current_phase: usize,
     current_sub: usize,
+    /// phase_info 缓存, 仅在步骤变化时重建
+    cached_phase_info: Vec<PhaseInfo>,
+    cached_phase_info_executed: usize,
+    phase_info_dirty: bool,
 }
 
 impl GenerationPipeline {
     pub fn new(seed: u64, biome_definitions: Vec<BiomeDefinition>) -> Self {
         Self {
             algorithms: Vec::new(),
+            step_counts: Vec::new(),
+            total_steps_cache: 0,
             seed,
             biome_map: None,
             shared_state: HashMap::new(),
             biome_definitions,
             current_phase: 0,
             current_sub: 0,
+            cached_phase_info: Vec::new(),
+            cached_phase_info_executed: usize::MAX,
+            phase_info_dirty: true,
         }
     }
 
     /// 注册一个算法模块
     pub fn register(&mut self, algorithm: Box<dyn PhaseAlgorithm>) {
+        let count = algorithm.meta().steps.len();
+        self.total_steps_cache += count;
+        self.step_counts.push(count);
         self.algorithms.push(algorithm);
+        self.phase_info_dirty = true;
     }
 
     // ── 访问器 ──────────────────────────────────────────────
 
-    /// 总子步骤数
+    /// 总子步骤数（O(1) 缓存）
     pub fn total_sub_steps(&self) -> usize {
-        self.algorithms
-            .iter()
-            .map(|a| a.meta().steps.len())
-            .sum()
+        self.total_steps_cache
     }
 
-    /// 已执行子步骤数
+    /// 已执行子步骤数（O(1) 使用缓存的 step_counts）
     pub fn executed_sub_steps(&self) -> usize {
-        let full: usize = self.algorithms[..self.current_phase]
-            .iter()
-            .map(|a| a.meta().steps.len())
-            .sum();
+        let full: usize = self.step_counts[..self.current_phase].iter().sum();
         full + self.current_sub
     }
 
@@ -118,8 +129,7 @@ impl GenerationPipeline {
         if self.current_phase >= self.algorithms.len() {
             return None;
         }
-        let meta = self.algorithms[self.current_phase].meta();
-        if self.current_sub < meta.steps.len() {
+        if self.current_sub < self.step_counts[self.current_phase] {
             Some(format!("{}.{}", self.current_phase + 1, self.current_sub))
         } else {
             None
@@ -191,11 +201,10 @@ impl GenerationPipeline {
         }
 
         let flat_index = self.executed_sub_steps();
-        let step_seed = derive_step_seed(self.seed, flat_index);
+        let step_seed = derive_step_seed(self.seed, flat_index, profile.size.width, profile.size.height);
         let mut rng = StdRng::seed_from_u64(step_seed);
 
-        let meta = self.algorithms[self.current_phase].meta();
-        let step_count = meta.steps.len();
+        let step_count = self.step_counts[self.current_phase];
 
         let mut ctx = RuntimeContext {
             world,
@@ -209,7 +218,10 @@ impl GenerationPipeline {
 
         self.algorithms[self.current_phase]
             .execute(self.current_sub, &mut ctx)
-            .map_err(|e| format!("{}: {e}", meta.name))?;
+            .map_err(|e| {
+                let meta = self.algorithms[self.current_phase].meta();
+                format!("{}: {e}", meta.name)
+            })?;
 
         // 推进位置
         self.current_sub += 1;
@@ -217,6 +229,7 @@ impl GenerationPipeline {
             self.current_phase += 1;
             self.current_sub = 0;
         }
+        self.phase_info_dirty = true;
 
         Ok(true)
     }
@@ -272,21 +285,15 @@ impl GenerationPipeline {
             return Ok(false);
         }
 
-        // 当前 phase 的起始 flat 位置
-        let current_phase_start: usize = self.algorithms[..self.current_phase]
-            .iter()
-            .map(|a| a.meta().steps.len())
-            .sum();
+        // 当前 phase 的起始 flat 位置（使用缓存的 step_counts）
+        let current_phase_start: usize = self.step_counts[..self.current_phase].iter().sum();
 
         let target = if executed > current_phase_start {
             // 还没到 phase 开头 → 回到当前 phase 开头
             current_phase_start
         } else if self.current_phase > 0 {
             // 已经在 phase 开头 → 回到前一个 phase 开头
-            self.algorithms[..self.current_phase - 1]
-                .iter()
-                .map(|a| a.meta().steps.len())
-                .sum()
+            self.step_counts[..self.current_phase - 1].iter().sum()
         } else {
             0
         };
@@ -305,6 +312,7 @@ impl GenerationPipeline {
         for algo in &mut self.algorithms {
             algo.on_reset();
         }
+        self.phase_info_dirty = true;
     }
 
     /// 从当前位置执行到底
@@ -346,16 +354,21 @@ impl GenerationPipeline {
                 }
             }
         }
+        self.phase_info_dirty = true;
     }
 
     // ── UI 信息 ─────────────────────────────────────────────
 
-    /// 构建控制面板需要的阶段/步骤快照列表
-    pub fn phase_info_list(&self) -> Vec<PhaseInfo> {
+    /// 构建控制面板需要的阶段/步骤快照列表（带缓存，仅步骤变化时重建）
+    pub fn phase_info_list(&mut self) -> &[PhaseInfo] {
         let executed = self.executed_sub_steps();
-        let mut flat = 0usize;
+        if !self.phase_info_dirty && self.cached_phase_info_executed == executed {
+            return &self.cached_phase_info;
+        }
 
-        self.algorithms
+        let mut flat = 0usize;
+        self.cached_phase_info = self
+            .algorithms
             .iter()
             .enumerate()
             .map(|(pi, algo)| {
@@ -404,15 +417,18 @@ impl GenerationPipeline {
                     status: phase_status,
                 }
             })
-            .collect()
+            .collect();
+
+        self.cached_phase_info_executed = executed;
+        self.phase_info_dirty = false;
+        &self.cached_phase_info
     }
 
     // ── 内部方法 ────────────────────────────────────────────
 
     fn flat_to_position(&self, flat: usize) -> (usize, usize) {
         let mut remaining = flat;
-        for (pi, algo) in self.algorithms.iter().enumerate() {
-            let count = algo.meta().steps.len();
+        for (pi, &count) in self.step_counts.iter().enumerate() {
             if remaining < count {
                 return (pi, remaining);
             }
@@ -446,9 +462,13 @@ impl GenerationPipeline {
 }
 
 /// 从主种子派生每步的确定性子种子
-fn derive_step_seed(master: u64, step_index: usize) -> u64 {
+///
+/// 混入世界尺寸，使同一种子+不同世界尺寸得到不同的生成结果（与泰拉瑞亚行为一致）。
+fn derive_step_seed(master: u64, step_index: usize, world_width: u32, world_height: u32) -> u64 {
+    let size_mix = (world_width as u64) << 32 | (world_height as u64);
     master
         .wrapping_add(step_index as u64)
         .wrapping_mul(6_364_136_223_846_793_005)
         .wrapping_add(1_442_695_040_888_963_407)
+        .wrapping_add(size_mix.wrapping_mul(2_862_933_555_777_941_757))
 }

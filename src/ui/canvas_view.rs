@@ -43,6 +43,7 @@ fn biome_overlay_image(
 /// 在 biome overlay 上找到各区域的中心并标注名称。
 ///
 /// 对于分布在世界两侧的环境（如海洋），会检测不连续区域并分别标注。
+/// 每个区域独立计算 avg_y，避免跨区域平均导致文字错位。
 fn draw_biome_labels(
     painter: &egui::Painter,
     biome_map: &BiomeMap,
@@ -52,13 +53,8 @@ fn draw_biome_labels(
 ) {
     use std::collections::HashMap;
 
-    // 对每种 biome 收集所有采样点的 x 坐标列表和 y 范围
-    struct SampleData {
-        xs: Vec<u32>,
-        sum_y: u64,
-        count: u64,
-    }
-    let mut sample_map: HashMap<u8, SampleData> = HashMap::new();
+    // 对每种 biome 收集所有采样点 (x, y)
+    let mut sample_map: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
 
     let step = 8u32;
     let w = biome_map.width;
@@ -68,18 +64,7 @@ fn draw_biome_labels(
         let mut x = 0;
         while x < w {
             let bid = biome_map.get(x, y);
-            sample_map
-                .entry(bid)
-                .and_modify(|s| {
-                    s.xs.push(x);
-                    s.sum_y += y as u64;
-                    s.count += 1;
-                })
-                .or_insert(SampleData {
-                    xs: vec![x],
-                    sum_y: y as u64,
-                    count: 1,
-                });
+            sample_map.entry(bid).or_default().push((x, y));
             x += step;
         }
         y += step;
@@ -88,35 +73,47 @@ fn draw_biome_labels(
     // 间隔阈值：如果连续采样列之间的间距超过此值，视为两个独立区域
     let gap_threshold = w / 5;
 
-    for (bid, data) in &sample_map {
+    for (bid, points) in &sample_map {
         let bdef = match biome_definitions.iter().find(|d| d.id == *bid) {
             Some(d) => d,
             None => continue,
         };
 
-        let avg_y = data.sum_y as f32 / data.count as f32;
+        // 按 x 排序
+        let mut sorted_points = points.clone();
+        sorted_points.sort_unstable_by_key(|&(x, _)| x);
 
-        // 将 x 排序后按间隔切分成独立区域
-        let mut sorted_xs = data.xs.clone();
-        sorted_xs.sort_unstable();
-
-        let mut regions: Vec<(u32, u32)> = Vec::new(); // (min_x, max_x)
-        let mut region_start = sorted_xs[0];
-        let mut region_end = sorted_xs[0];
-
-        for &x in &sorted_xs[1..] {
-            if x - region_end > gap_threshold {
-                regions.push((region_start, region_end));
-                region_start = x;
-            }
-            region_end = x;
+        // 按 x 间隔切分成独立区域，同时收集每个区域的 (x_min, x_max, sum_y, count)
+        struct Region {
+            x_min: u32,
+            x_max: u32,
+            sum_y: u64,
+            count: u64,
         }
-        regions.push((region_start, region_end));
+        let mut regions: Vec<Region> = Vec::new();
+        let mut cur = Region {
+            x_min: sorted_points[0].0,
+            x_max: sorted_points[0].0,
+            sum_y: sorted_points[0].1 as u64,
+            count: 1,
+        };
+
+        for &(x, y) in &sorted_points[1..] {
+            if x - cur.x_max > gap_threshold {
+                regions.push(cur);
+                cur = Region { x_min: x, x_max: x, sum_y: y as u64, count: 1 };
+            } else {
+                cur.x_max = x;
+                cur.sum_y += y as u64;
+                cur.count += 1;
+            }
+        }
+        regions.push(cur);
 
         // 在每个区域的中心放置标签
-        for (rx_min, rx_max) in &regions {
-            let cx = ((*rx_min + *rx_max) as f32 / 2.0) * zoom + image_rect.left();
-            let cy = avg_y * zoom + image_rect.top();
+        for region in &regions {
+            let cx = ((region.x_min + region.x_max) as f32 / 2.0) * zoom + image_rect.left();
+            let cy = (region.sum_y as f32 / region.count as f32) * zoom + image_rect.top();
             let pos = Pos2::new(cx, cy);
             if image_rect.contains(pos) {
                 painter.text(
@@ -140,8 +137,10 @@ pub fn show_canvas(
     biome_map: Option<&BiomeMap>,
     biome_definitions: &[BiomeDefinition],
     layers: &[LayerDefinition],
-    show_biome_overlay: bool,
-    show_layer_overlay: bool,
+    show_biome_color: bool,
+    show_biome_labels: bool,
+    show_layer_lines: bool,
+    show_layer_labels: bool,
     biome_overlay_texture: &mut Option<TextureHandle>,
 ) -> Option<HoverInfo> {
     let available = ui.available_size();
@@ -183,77 +182,85 @@ pub fn show_canvas(
     painter.rect_stroke(image_rect, 0.0, Stroke::new(1.0, Color32::from_gray(120)));
 
     // ── biome overlay ──────────────────────────────────────────
-    if show_biome_overlay {
+    if show_biome_color || show_biome_labels {
         if let Some(bm) = biome_map {
-            // 惰性生成 biome overlay 纹理
-            if biome_overlay_texture.is_none() {
-                let img = biome_overlay_image(bm, biome_definitions);
-                *biome_overlay_texture = Some(ui.ctx().load_texture(
-                    "biome_overlay",
-                    img,
-                    TextureOptions::NEAREST,
-                ));
+            // 覆盖色纹理
+            if show_biome_color {
+                if biome_overlay_texture.is_none() {
+                    let img = biome_overlay_image(bm, biome_definitions);
+                    *biome_overlay_texture = Some(ui.ctx().load_texture(
+                        "biome_overlay",
+                        img,
+                        TextureOptions::NEAREST,
+                    ));
+                }
+
+                if let Some(ov_tex) = biome_overlay_texture {
+                    painter.image(
+                        ov_tex.id(),
+                        image_rect,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
             }
 
-            if let Some(ov_tex) = biome_overlay_texture {
-                painter.image(
-                    ov_tex.id(),
-                    image_rect,
-                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+            // 环境名称文字标签
+            if show_biome_labels {
+                draw_biome_labels(&painter, bm, biome_definitions, image_rect, viewport.zoom);
             }
-
-            // 绘制环境名称标签
-            draw_biome_labels(&painter, bm, biome_definitions, image_rect, viewport.zoom);
         }
     }
 
     // ── layer overlay ──────────────────────────────────────────
-    if show_layer_overlay {
-        // 收集所有唯一的边界百分比值
-        let mut boundary_percents: Vec<u8> = Vec::new();
-        for layer in layers {
-            if !boundary_percents.contains(&layer.start_percent) {
-                boundary_percents.push(layer.start_percent);
+    if show_layer_lines || show_layer_labels {
+        if show_layer_lines {
+            // 收集所有唯一的边界百分比值
+            let mut boundary_percents: Vec<u8> = Vec::new();
+            for layer in layers {
+                if !boundary_percents.contains(&layer.start_percent) {
+                    boundary_percents.push(layer.start_percent);
+                }
+                if !boundary_percents.contains(&layer.end_percent) {
+                    boundary_percents.push(layer.end_percent);
+                }
             }
-            if !boundary_percents.contains(&layer.end_percent) {
-                boundary_percents.push(layer.end_percent);
-            }
-        }
-        boundary_percents.sort();
-        
-        // 绘制所有边界线
-        for &pct in &boundary_percents {
-            let y_percent = pct as f32 / 100.0;
-            let y_world = (world_height as f32 * y_percent) as u32;
-            let y_screen = image_rect.top() + y_world as f32 * viewport.zoom;
+            boundary_percents.sort();
             
-            if y_screen >= image_rect.top() && y_screen <= image_rect.bottom() {
-                let start = Pos2::new(image_rect.left(), y_screen);
-                let end = Pos2::new(image_rect.right(), y_screen);
+            // 绘制所有边界线
+            for &pct in &boundary_percents {
+                let y_percent = pct as f32 / 100.0;
+                let y_world = (world_height as f32 * y_percent) as u32;
+                let y_screen = image_rect.top() + y_world as f32 * viewport.zoom;
                 
-                painter.line_segment(
-                    [start, end],
-                    Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 255, 255, 120)),
-                );
+                if y_screen >= image_rect.top() && y_screen <= image_rect.bottom() {
+                    let start = Pos2::new(image_rect.left(), y_screen);
+                    let end = Pos2::new(image_rect.right(), y_screen);
+                    
+                    painter.line_segment(
+                        [start, end],
+                        Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 255, 255, 120)),
+                    );
+                }
             }
         }
         
         // 在每个层级的中心位置绘制名称标签
-        for layer in layers {
-            let mid_percent = (layer.start_percent as f32 + layer.end_percent as f32) / 2.0 / 100.0;
-            let mid_y = image_rect.top() + world_height as f32 * mid_percent * viewport.zoom;
-            
-            if mid_y >= image_rect.top() && mid_y <= image_rect.bottom() {
-                let label_pos = Pos2::new(image_rect.left() + 10.0, mid_y);
-                painter.text(
-                    label_pos,
-                    egui::Align2::LEFT_CENTER,
-                    &layer.key,
-                    egui::FontId::proportional(12.0),
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 180),
-                );
+        if show_layer_labels {
+            for layer in layers {
+                let mid_percent = (layer.start_percent as f32 + layer.end_percent as f32) / 2.0 / 100.0;
+                let mid_y = image_rect.top() + world_height as f32 * mid_percent * viewport.zoom;
+                
+                if mid_y >= image_rect.top() && mid_y <= image_rect.bottom() {
+                    let label_pos = Pos2::new(image_rect.left() + 10.0, mid_y);
+                    painter.text(
+                        label_pos,
+                        egui::Align2::LEFT_CENTER,
+                        &layer.key,
+                        egui::FontId::proportional(12.0),
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 180),
+                    );
+                }
             }
         }
     }

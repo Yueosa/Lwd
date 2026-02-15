@@ -1,4 +1,4 @@
-use egui::{ProgressBar, ScrollArea, Ui};
+use egui::{Align, Layout, ProgressBar, ScrollArea, Ui};
 
 use crate::generation::{PhaseInfo, StepStatus};
 
@@ -19,8 +19,7 @@ pub struct ControlAction {
     pub step_backward_phase: bool,
     pub run_all: bool,
     pub reset_and_step: bool,
-    pub biome_overlay_toggled: bool,
-    pub layer_overlay_toggled: bool,
+    pub open_overlay_config: bool,
     pub open_layer_config: bool,
     /// 打开当前步骤的算法配置面板
     pub open_step_config: bool,
@@ -30,6 +29,8 @@ pub struct ControlAction {
     pub export_lwd: bool,
     /// 导入 .lwd 存档
     pub import_lwd: bool,
+    /// 应用手动输入的种子
+    pub apply_seed: bool,
 }
 
 impl ControlAction {
@@ -44,13 +45,13 @@ impl ControlAction {
             step_backward_phase: false,
             run_all: false,
             reset_and_step: false,
-            biome_overlay_toggled: false,
-            layer_overlay_toggled: false,
+            open_overlay_config: false,
             open_layer_config: false,
             open_step_config: false,
             export_png: false,
             export_lwd: false,
             import_lwd: false,
+            apply_seed: false,
         }
     }
 }
@@ -75,15 +76,16 @@ impl Default for WorldSizeSelection {
 pub fn show_control_panel(
     ui: &mut Ui,
     world_size: &mut WorldSizeSelection,
+    seed_input: &mut String,
     phase_info: &[PhaseInfo],
     executed: usize,
     total: usize,
-    show_biome_overlay: &mut bool,
-    show_layer_overlay: &mut bool,
 ) -> ControlAction {
     let mut action = ControlAction::none();
 
-    ui.heading("  🗺 Lian World");
+    ui.with_layout(Layout::top_down(Align::Center), |ui| {
+        ui.heading("🗺 Lian World");
+    });
     ui.separator();
 
     // ── world size ──
@@ -91,6 +93,23 @@ pub fn show_control_panel(
     ui.radio_value(world_size, WorldSizeSelection::Small, "小 (4200×1200)");
     ui.radio_value(world_size, WorldSizeSelection::Medium, "中 (6400×1800)");
     ui.radio_value(world_size, WorldSizeSelection::Large, "大 (8400×2400)");
+
+    ui.separator();
+
+    // ── seed input ──
+    ui.label("种子");
+    ui.horizontal(|ui| {
+        let text_edit = egui::TextEdit::singleline(seed_input)
+            .hint_text("输入种子 (十六进制/十进制)")
+            .desired_width(140.0);
+        let resp = ui.add(text_edit);
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            action.apply_seed = true;
+        }
+        if ui.button("✓").on_hover_text("应用种子并重置到第0步").clicked() {
+            action.apply_seed = true;
+        }
+    });
 
     ui.separator();
 
@@ -243,19 +262,16 @@ pub fn show_control_panel(
 
     ui.separator();
 
-    // ── overlay ──
-    ui.label("可视化图层");
-    if ui.checkbox(show_biome_overlay, "显示环境划分").changed() {
-        action.biome_overlay_toggled = true;
-    }
-    if ui.checkbox(show_layer_overlay, "显示层级划分").changed() {
-        action.layer_overlay_toggled = true;
-    }
-    
-    // 层级配置按钮
-    if ui.button("⚙ 配置层级").clicked() {
-        action.open_layer_config = true;
-    }
+    // ── overlay + layer config ──
+    ui.label("配置");
+    ui.horizontal(|ui| {
+        if ui.button("👁 可视化配置").on_hover_text("环境/层级的覆盖色、文字、分界线开关").clicked() {
+            action.open_overlay_config = true;
+        }
+        if ui.button("⚙ 层级配置").on_hover_text("编辑层级垂直分布").clicked() {
+            action.open_layer_config = true;
+        }
+    });
 
     action
 }

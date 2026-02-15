@@ -16,6 +16,7 @@ use crate::ui::algo_config::show_algo_config_window;
 use crate::ui::canvas_view::show_canvas;
 use crate::ui::control_panel::{show_control_panel, ControlAction, WorldSizeSelection};
 use crate::ui::layer_config::{show_layer_config_window, merge_runtime_field};
+use crate::ui::overlay_config::{show_overlay_config_window, OverlaySettings};
 use crate::ui::status_bar::show_status_bar;
 
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc");
@@ -48,6 +49,8 @@ pub struct LianWorldApp {
     pipeline: GenerationPipeline,
     /// 是否正在后台逐帧执行（替代同步 run_all 阻塞 UI）
     running_to_end: bool,
+    /// 增量执行帧计数器（用于降低纹理更新频率）
+    inc_frame_counter: usize,
 
     // ── rendering ──
     viewport: ViewportState,
@@ -58,10 +61,12 @@ pub struct LianWorldApp {
     // ── UI ──
     last_status: String,
     hover_status: String,
-    show_biome_overlay: bool,
-    show_layer_overlay: bool,
+    overlay: OverlaySettings,
+    show_overlay_config: bool,
     show_layer_config: bool,
     show_algo_config: bool,
+    /// 手动种子输入框的文本内容
+    seed_input: String,
 }
 
 impl LianWorldApp {
@@ -97,7 +102,7 @@ impl LianWorldApp {
         ));
 
         // 从 runtime.json 恢复 UI 状态
-        let (saved_size, saved_biome_ov, saved_layer_ov) = load_runtime_ui_state();
+        let (saved_size, saved_overlay) = load_runtime_ui_state();
 
         let mut app = Self {
             world_cfg,
@@ -110,16 +115,18 @@ impl LianWorldApp {
             world_profile,
             pipeline,
             running_to_end: false,
+            inc_frame_counter: 0,
             viewport: ViewportState::default(),
             texture,
             texture_dirty: false,
             biome_overlay_texture: None,
             last_status: "世界初始化完成".to_string(),
             hover_status: String::new(),
-            show_biome_overlay: saved_biome_ov,
-            show_layer_overlay: saved_layer_ov,
+            overlay: saved_overlay,
+            show_overlay_config: false,
             show_layer_config: false,
             show_algo_config: false,
+            seed_input: String::new(),
         };
 
         // 根据恢复的 world_size 切换
@@ -158,7 +165,7 @@ impl LianWorldApp {
             "已切换: {} ({}×{})",
             self.world_profile.size.description, self.world.width, self.world.height
         );        // 保存 UI 状态
-        save_runtime_ui_state(self.world_size, self.show_biome_overlay, self.show_layer_overlay);    }
+        save_runtime_ui_state(self.world_size, &self.overlay);    }
 
     // ── texture management ──────────────────────────────────
 
@@ -284,7 +291,20 @@ impl LianWorldApp {
             self.pipeline.set_seed(new_seed);
             self.pipeline.reset_all(&mut self.world);
             self.texture_dirty = true;
+            self.seed_input = format!("{new_seed:016X}");
             self.last_status = format!("已重置到第0步 (seed: {new_seed})");
+        }
+
+        // ── 手动设置种子
+        if action.apply_seed {
+            if let Some(new_seed) = parse_seed_input(&self.seed_input) {
+                self.pipeline.set_seed(new_seed);
+                self.pipeline.reset_all(&mut self.world);
+                self.texture_dirty = true;
+                self.last_status = format!("已应用种子: 0x{new_seed:016X}");
+            } else {
+                self.last_status = "种子格式无效（请输入十六进制或十进制数字）".to_string();
+            }
         }
 
         // ── "一键生成" or "执行到底": start incremental run
@@ -379,8 +399,7 @@ impl LianWorldApp {
                         
                         save_runtime_ui_state(
                             self.world_size,
-                            self.show_biome_overlay,
-                            self.show_layer_overlay,
+                            &self.overlay,
                         );
                     }
                     Err(e) => {
@@ -408,6 +427,28 @@ fn setup_chinese_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// 解析用户输入的种子值
+/// 
+/// 支持格式：
+/// - 十六进制（带 0x 前缀或纯 hex 字符串）
+/// - 十进制整数
+fn parse_seed_input(input: &str) -> Option<u64> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // 尝试十六进制（带 0x 或 0X 前缀）
+    if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+        return u64::from_str_radix(hex, 16).ok();
+    }
+    // 尝试十进制
+    if let Ok(v) = trimmed.parse::<u64>() {
+        return Some(v);
+    }
+    // 尝试纯十六进制（无前缀，但包含 a-f 字符）
+    u64::from_str_radix(trimmed, 16).ok()
+}
+
 /// 从 generation.runtime.json 加载层级配置（如果存在）
 fn load_runtime_layers(layers: &mut [crate::core::layer::LayerDefinition]) {
     use std::fs;
@@ -432,12 +473,11 @@ fn load_runtime_layers(layers: &mut [crate::core::layer::LayerDefinition]) {
 }
 
 /// 从 runtime.json 加载 UI 状态 (world_size, overlay 开关)
-fn load_runtime_ui_state() -> (WorldSizeSelection, bool, bool) {
+fn load_runtime_ui_state() -> (WorldSizeSelection, OverlaySettings) {
     use std::fs;
     
     let mut size = WorldSizeSelection::Small;
-    let mut biome_ov = false;
-    let mut layer_ov = true;
+    let mut overlay = OverlaySettings::default();
     
     let runtime_path = runtime_json_path();
     if let Ok(content) = fs::read_to_string(runtime_path) {
@@ -450,24 +490,42 @@ fn load_runtime_ui_state() -> (WorldSizeSelection, bool, bool) {
                         _ => WorldSizeSelection::Small,
                     };
                 }
-                if let Some(b) = ui.get("show_biome_overlay").and_then(|v| v.as_bool()) {
-                    biome_ov = b;
+                if let Some(b) = ui.get("show_biome_color").and_then(|v| v.as_bool()) {
+                    overlay.show_biome_color = b;
                 }
-                if let Some(l) = ui.get("show_layer_overlay").and_then(|v| v.as_bool()) {
-                    layer_ov = l;
+                if let Some(b) = ui.get("show_biome_labels").and_then(|v| v.as_bool()) {
+                    overlay.show_biome_labels = b;
+                }
+                if let Some(b) = ui.get("show_layer_lines").and_then(|v| v.as_bool()) {
+                    overlay.show_layer_lines = b;
+                }
+                if let Some(b) = ui.get("show_layer_labels").and_then(|v| v.as_bool()) {
+                    overlay.show_layer_labels = b;
+                }
+                // 兼容旧配置
+                if let Some(b) = ui.get("show_biome_overlay").and_then(|v| v.as_bool()) {
+                    if !ui.contains_key("show_biome_color") {
+                        overlay.show_biome_color = b;
+                        overlay.show_biome_labels = b;
+                    }
+                }
+                if let Some(b) = ui.get("show_layer_overlay").and_then(|v| v.as_bool()) {
+                    if !ui.contains_key("show_layer_lines") {
+                        overlay.show_layer_lines = b;
+                        overlay.show_layer_labels = b;
+                    }
                 }
             }
         }
     }
     
-    (size, biome_ov, layer_ov)
+    (size, overlay)
 }
 
 /// 保存 UI 状态 (world_size, overlay 开关) 到 runtime.json
 fn save_runtime_ui_state(
     world_size: WorldSizeSelection,
-    show_biome_overlay: bool,
-    show_layer_overlay: bool,
+    overlay: &OverlaySettings,
 ) {
     use serde_json::json;
     
@@ -479,8 +537,10 @@ fn save_runtime_ui_state(
     
     let ui_state = json!({
         "world_size": size_str,
-        "show_biome_overlay": show_biome_overlay,
-        "show_layer_overlay": show_layer_overlay,
+        "show_biome_color": overlay.show_biome_color,
+        "show_biome_labels": overlay.show_biome_labels,
+        "show_layer_lines": overlay.show_layer_lines,
+        "show_layer_labels": overlay.show_layer_labels,
     });
     
     if let Ok(config) = merge_runtime_field("ui", ui_state) {
@@ -495,7 +555,8 @@ impl eframe::App for LianWorldApp {
         self.refresh_texture_if_dirty(ctx);
 
         // ── left panel ──
-        let phase_info = self.pipeline.phase_info_list();
+        // 使用 pipeline 的缓存 phase_info（仅步骤变化时重建）
+        let phase_info = self.pipeline.phase_info_list().to_vec();
         let executed = self.pipeline.executed_sub_steps();
         let total = self.pipeline.total_sub_steps();
         let mut action = ControlAction::none();
@@ -507,11 +568,10 @@ impl eframe::App for LianWorldApp {
                 action = show_control_panel(
                     ui,
                     &mut self.world_size,
+                    &mut self.seed_input,
                     &phase_info,
                     executed,
                     total,
-                    &mut self.show_biome_overlay,
-                    &mut self.show_layer_overlay,
                 );
                 ui.separator();
                 ui.label(format!("缩放: {:.0}%", self.viewport.zoom * 100.0));
@@ -525,6 +585,24 @@ impl eframe::App for LianWorldApp {
         // ── algo config window ──
         if action.open_step_config {
             self.show_algo_config = true;
+        }
+
+        // ── overlay config window ──
+        if action.open_overlay_config {
+            self.show_overlay_config = true;
+        }
+
+        if self.show_overlay_config {
+            let changed = show_overlay_config_window(
+                ctx,
+                &mut self.show_overlay_config,
+                &mut self.overlay,
+            );
+            if changed {
+                // 切换 biome 覆盖色时重建纹理缓存
+                self.biome_overlay_texture = None;
+                save_runtime_ui_state(self.world_size, &self.overlay);
+            }
         }
 
         if self.show_algo_config {
@@ -613,7 +691,12 @@ impl eframe::App for LianWorldApp {
                     }
                 }
             }
-            self.texture_dirty = true;
+            // 增量执行期间，每 5 帧才刷新一次纹理，大幅减少 GPU 上传开销
+            self.inc_frame_counter += 1;
+            let should_refresh = self.pipeline.is_complete() || self.inc_frame_counter % 5 == 0;
+            if should_refresh {
+                self.texture_dirty = true;
+            }
             self.last_status = format!(
                 "正在生成… {}/{}",
                 self.pipeline.executed_sub_steps(),
@@ -621,6 +704,7 @@ impl eframe::App for LianWorldApp {
             );
             if self.pipeline.is_complete() {
                 self.running_to_end = false;
+                self.inc_frame_counter = 0;
                 self.last_status = format!(
                     "全部步骤已完成 ({}/{})",
                     self.pipeline.executed_sub_steps(),
@@ -633,11 +717,18 @@ impl eframe::App for LianWorldApp {
         self.refresh_texture_if_dirty(ctx);
 
         // 如果 overlay 开关变化，保存 UI 状态
-        if action.biome_overlay_toggled || action.layer_overlay_toggled {
-            save_runtime_ui_state(self.world_size, self.show_biome_overlay, self.show_layer_overlay);
+        if action.open_overlay_config {
+            save_runtime_ui_state(self.world_size, &self.overlay);
         }
 
         // ── bottom bar ──
+        let seed = self.pipeline.seed();
+        let step_progress = match self.pipeline.current_step_display_id() {
+            Some(id) => format!("Step {} ({}/{})", id, self.pipeline.executed_sub_steps(), self.pipeline.total_sub_steps()),
+            None if self.pipeline.is_complete() => format!("已完成 ({0}/{0})", self.pipeline.total_sub_steps()),
+            None => format!("0/{}", self.pipeline.total_sub_steps()),
+        };
+        let world_size_label = format!("{}×{}", self.world.width, self.world.height);
         egui::TopBottomPanel::bottom("status_bar")
             .resizable(false)
             .min_height(28.0)
@@ -652,7 +743,11 @@ impl eframe::App for LianWorldApp {
                 let mem_mb = ((self.world.width as usize * self.world.height as usize * 4)
                     / (1024 * 1024))
                     .max(1);
-                show_status_bar(ui, fps, mem_mb, &self.last_status, &self.hover_status);
+                show_status_bar(
+                    ui, fps, mem_mb,
+                    &self.last_status, &self.hover_status,
+                    seed, &step_progress, &world_size_label,
+                );
             });
 
         // ── central canvas ──
@@ -668,8 +763,10 @@ impl eframe::App for LianWorldApp {
                     biome_map,
                     &self.biomes,
                     &self.world_profile.layers,
-                    self.show_biome_overlay,
-                    self.show_layer_overlay,
+                    self.overlay.show_biome_color,
+                    self.overlay.show_biome_labels,
+                    self.overlay.show_layer_lines,
+                    self.overlay.show_layer_labels,
                     &mut self.biome_overlay_texture,
                 ) {
                     let idx = (hover.y * self.world.width + hover.x) as usize;
