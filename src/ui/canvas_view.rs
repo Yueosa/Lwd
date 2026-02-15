@@ -66,8 +66,9 @@ pub fn show_canvas(
         if scroll.y.abs() > 0.5 {
             if let Some(pointer) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                 let old_zoom = viewport.zoom;
-                let factor = if scroll.y > 0.0 { 1.15 } else { 1.0 / 1.15 };
-                let new_zoom = (old_zoom * factor).clamp(0.1, 20.0);
+                // Gentle: ~5% zoom per typical scroll tick (~50px)
+                let factor = (1.0 + scroll.y * 0.001).clamp(0.9, 1.1);
+                let new_zoom = (old_zoom * factor).clamp(0.05, 20.0);
                 let scale = new_zoom / old_zoom;
 
                 // Keep the point under the cursor fixed

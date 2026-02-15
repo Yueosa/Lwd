@@ -11,7 +11,8 @@ pub struct ControlAction {
     pub zoom_reset: bool,
     pub step_forward: bool,
     pub step_backward: bool,
-    pub regenerate: bool,
+    pub run_all: bool,
+    pub reset_and_step: bool,
 }
 
 impl ControlAction {
@@ -22,7 +23,8 @@ impl ControlAction {
             zoom_reset: false,
             step_forward: false,
             step_backward: false,
-            regenerate: false,
+            run_all: false,
+            reset_and_step: false,
         }
     }
 }
@@ -116,12 +118,24 @@ pub fn show_control_panel(
     ui.separator();
 
     // ── actions ──
+    ui.label("生成操作");
     ui.horizontal(|ui| {
-        if ui.button("🔄 重新生成").clicked() {
-            action.regenerate = true;
+        if ui.button("🔄 一键生成").on_hover_text("新种子 → 重置 → 执行全部步骤").clicked() {
+            action.reset_and_step = true;
+            action.run_all = true;
         }
-        ui.add_enabled(false, egui::Button::new("📸 导出 PNG"));
+        if ui.button("♻ 重新初始化").on_hover_text("新种子 → 重置到第0步，可手动步进").clicked() {
+            action.reset_and_step = true;
+        }
     });
+    if ui
+        .add_enabled(executed < total, egui::Button::new("⏩ 执行到底"))
+        .on_hover_text("从当前步骤一直执行到最后")
+        .clicked()
+    {
+        action.run_all = true;
+    }
+    ui.add_enabled(false, egui::Button::new("📸 导出 PNG"));
 
     ui.separator();
 
