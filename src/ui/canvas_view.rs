@@ -17,15 +17,20 @@ fn biome_overlay_image(
 ) -> ColorImage {
     let w = biome_map.width as usize;
     let h = biome_map.height as usize;
-    let mut pixels = vec![Color32::TRANSPARENT; w * h];
 
+    // 构建 biome ID → overlay 颜色 LUT（最多 256）
+    let mut biome_lut = [Color32::TRANSPARENT; 256];
+    for bdef in biome_definitions {
+        let c = bdef.overlay_color;
+        biome_lut[bdef.id as usize] = Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+    }
+
+    let mut pixels = vec![Color32::TRANSPARENT; w * h];
     for y in 0..h {
+        let row = y * w;
         for x in 0..w {
             let bid = biome_map.get(x as u32, y as u32);
-            if let Some(bdef) = biome_definitions.iter().find(|b| b.id == bid) {
-                let c = bdef.overlay_color;
-                pixels[y * w + x] = Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            }
+            pixels[row + x] = biome_lut[bid as usize];
         }
     }
 
