@@ -35,7 +35,9 @@ fn biome_overlay_image(
     }
 }
 
-/// 在 biome overlay 上找到各连通区域的大致中心并标注名称
+/// 在 biome overlay 上找到各区域的中心并标注名称。
+///
+/// 对于分布在世界两侧的环境（如海洋），会检测不连续区域并分别标注。
 fn draw_biome_labels(
     painter: &egui::Painter,
     biome_map: &BiomeMap,
@@ -43,18 +45,16 @@ fn draw_biome_labels(
     image_rect: Rect,
     zoom: f32,
 ) {
-    // 对每种 biome，找到它的 bounding box 中心来放置标签
-    // 简单方法：统计 x/y 的 min/max
     use std::collections::HashMap;
-    struct Bounds {
-        min_x: u32,
-        max_x: u32,
-        min_y: u32,
-        max_y: u32,
-    }
-    let mut bounds_map: HashMap<u8, Bounds> = HashMap::new();
 
-    // 为了性能，采样而不是遍历全部像素（每16行/列采样一次）
+    // 对每种 biome 收集所有采样点的 x 坐标列表和 y 范围
+    struct SampleData {
+        xs: Vec<u32>,
+        sum_y: u64,
+        count: u64,
+    }
+    let mut sample_map: HashMap<u8, SampleData> = HashMap::new();
+
     let step = 8u32;
     let w = biome_map.width;
     let h = biome_map.height;
@@ -63,29 +63,55 @@ fn draw_biome_labels(
         let mut x = 0;
         while x < w {
             let bid = biome_map.get(x, y);
-            bounds_map
+            sample_map
                 .entry(bid)
-                .and_modify(|b| {
-                    b.min_x = b.min_x.min(x);
-                    b.max_x = b.max_x.max(x);
-                    b.min_y = b.min_y.min(y);
-                    b.max_y = b.max_y.max(y);
+                .and_modify(|s| {
+                    s.xs.push(x);
+                    s.sum_y += y as u64;
+                    s.count += 1;
                 })
-                .or_insert(Bounds {
-                    min_x: x,
-                    max_x: x,
-                    min_y: y,
-                    max_y: y,
+                .or_insert(SampleData {
+                    xs: vec![x],
+                    sum_y: y as u64,
+                    count: 1,
                 });
             x += step;
         }
         y += step;
     }
 
-    for (bid, b) in &bounds_map {
-        if let Some(bdef) = biome_definitions.iter().find(|d| d.id == *bid) {
-            let cx = ((b.min_x + b.max_x) as f32 / 2.0) * zoom + image_rect.left();
-            let cy = ((b.min_y + b.max_y) as f32 / 2.0) * zoom + image_rect.top();
+    // 间隔阈值：如果连续采样列之间的间距超过此值，视为两个独立区域
+    let gap_threshold = w / 5;
+
+    for (bid, data) in &sample_map {
+        let bdef = match biome_definitions.iter().find(|d| d.id == *bid) {
+            Some(d) => d,
+            None => continue,
+        };
+
+        let avg_y = data.sum_y as f32 / data.count as f32;
+
+        // 将 x 排序后按间隔切分成独立区域
+        let mut sorted_xs = data.xs.clone();
+        sorted_xs.sort_unstable();
+
+        let mut regions: Vec<(u32, u32)> = Vec::new(); // (min_x, max_x)
+        let mut region_start = sorted_xs[0];
+        let mut region_end = sorted_xs[0];
+
+        for &x in &sorted_xs[1..] {
+            if x - region_end > gap_threshold {
+                regions.push((region_start, region_end));
+                region_start = x;
+            }
+            region_end = x;
+        }
+        regions.push((region_start, region_end));
+
+        // 在每个区域的中心放置标签
+        for (rx_min, rx_max) in &regions {
+            let cx = ((*rx_min + *rx_max) as f32 / 2.0) * zoom + image_rect.left();
+            let cy = avg_y * zoom + image_rect.top();
             let pos = Pos2::new(cx, cy);
             if image_rect.contains(pos) {
                 painter.text(
