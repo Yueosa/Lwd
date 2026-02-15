@@ -6,17 +6,24 @@ use egui::{Context, Ui};
 
 use crate::generation::algorithm::{ParamDef, ParamType, PhaseAlgorithm, PhaseMeta};
 
+/// 算法配置窗口的返回值
+pub struct AlgoConfigResult {
+    /// 参数是否有变更
+    pub changed: bool,
+    /// 用户是否请求重新执行当前步骤
+    pub replay_requested: bool,
+}
+
 /// 显示算法参数配置窗口。
-///
-/// 返回 `true` 表示参数有变更（调用方应标记 texture_dirty 等）。
 pub fn show_algo_config_window(
     ctx: &Context,
     open: &mut bool,
     algorithm: &mut Box<dyn PhaseAlgorithm>,
-) -> bool {
+) -> AlgoConfigResult {
     let meta = algorithm.meta();
     let mut params = algorithm.get_params();
     let mut changed = false;
+    let mut replay = false;
 
     egui::Window::new(format!("⚙ {} — 参数配置", meta.name))
         .open(open)
@@ -38,8 +45,13 @@ pub fn show_algo_config_window(
             ui.separator();
 
             ui.horizontal(|ui| {
+                if ui.button("🔄 重新执行当前步骤")
+                    .on_hover_text("应用修改后的参数，从当前阶段开头重新执行")
+                    .clicked()
+                {
+                    replay = true;
+                }
                 if ui.button("重置为默认值").clicked() {
-                    // 用 param_def.default 还原每个参数
                     for param_def in &meta.params {
                         if let Some(obj) = params.as_object_mut() {
                             obj.insert(param_def.key.clone(), param_def.default.clone());
@@ -54,7 +66,10 @@ pub fn show_algo_config_window(
         algorithm.set_params(&params);
     }
 
-    changed
+    AlgoConfigResult {
+        changed,
+        replay_requested: replay,
+    }
 }
 
 /// 根据 ParamDef 的类型渲染对应的 UI 控件，返回是否发生了修改。
