@@ -7,7 +7,7 @@ pub struct ViewportState {
 impl Default for ViewportState {
     fn default() -> Self {
         Self {
-            zoom: 1.0,
+            zoom: 0.3,
             offset: [0.0, 0.0],
         }
     }
@@ -23,7 +23,7 @@ impl ViewportState {
     }
 
     pub fn reset(&mut self) {
-        self.zoom = 1.0;
+        self.zoom = 0.3;
         self.offset = [0.0, 0.0];
     }
 
