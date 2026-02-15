@@ -6,7 +6,7 @@ use egui::{Color32, FontData, FontDefinitions, FontFamily, TextureHandle};
 use crate::config::biome::load_biomes_config;
 use crate::config::blocks::load_blocks_config;
 use crate::config::world::{load_world_config, WorldConfig};
-use crate::core::biome::{build_biome_definitions, BiomeDefinition};
+use crate::core::biome::{build_biome_definitions, get_biome_context, BiomeDefinition};
 use crate::core::block::{build_block_definitions, BlockDefinition};
 use crate::core::world::{World, WorldProfile};
 use crate::generation::{build_pipeline, GenerationPipeline, WorldSnapshot, export_png};
@@ -776,8 +776,25 @@ impl eframe::App for LianWorldApp {
                         .get(&block_id)
                         .map(|s| s.as_str())
                         .unwrap_or("未知");
+
+                    // 环境 + 地层信息
+                    let biome_layer = if let Some(bm) = biome_map {
+                        let ctx = get_biome_context(
+                            hover.x, hover.y, bm,
+                            &self.world_profile.layers, self.world.height,
+                        );
+                        let biome_name = ctx.horizontal
+                            .and_then(|id| self.biomes.iter().find(|b| b.id == id))
+                            .map(|b| b.name.as_str())
+                            .unwrap_or("未分配");
+                        let layer_name = ctx.vertical.as_deref().unwrap_or("?");
+                        format!(" | {biome_name}·{layer_name}")
+                    } else {
+                        String::new()
+                    };
+
                     self.hover_status =
-                        format!("{name}(ID:{block_id}) @ ({}, {})", hover.x, hover.y);
+                        format!("{name}(ID:{block_id}) @ ({}, {}){biome_layer}", hover.x, hover.y);
                 } else {
                     self.hover_status.clear();
                 }
