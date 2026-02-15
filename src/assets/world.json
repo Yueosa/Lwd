@@ -1,0 +1,52 @@
+{
+    "world_sizes": {
+        "small": {
+            "width": 4200,
+            "height": 1200,
+            "description": "小世界"
+        },
+        "medium": {
+            "width": 6400,
+            "height": 1800,
+            "description": "中世界"
+        },
+        "large": {
+            "width": 8400,
+            "height": 2400,
+            "description": "大世界"
+        },
+        "custom": {
+            "width": null,
+            "height": null,
+            "description": "自定义尺寸（运行时指定）"
+        }
+    },
+    
+    "layers": {
+        "space": {
+            "start_percent": 0,
+            "end_percent": 5,
+            "description": "太空层 - 占总高度的5%"
+        },
+        "surface": {
+            "start_percent": 5,
+            "end_percent": 25,
+            "description": "地表层 - 占总高度的20%"
+        },
+        "underground": {
+            "start_percent": 25,
+            "end_percent": 35,
+            "description": "地下层 - 占总高度的10%"
+        },
+        "cavern": {
+            "start_percent": 35,
+            "end_percent": 80,
+            "description": "洞穴层 - 占总高度的48%"
+        },
+        "hell": {
+            "start_percent": 80,
+            "end_percent": 100,
+            "description": "地狱层 - 占总高度的17%"
+        }
+    }
+}
