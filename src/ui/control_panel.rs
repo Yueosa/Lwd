@@ -1,6 +1,7 @@
-use egui::{Align, Layout, ProgressBar, ScrollArea, Ui};
+use egui::{Align, Layout, Rect, ScrollArea, Ui, Vec2};
 
 use crate::generation::{PhaseInfo, StepStatus};
+use crate::ui::theme;
 
 // ── action returned to the app ──────────────────────────────
 
@@ -83,21 +84,24 @@ pub fn show_control_panel(
 ) -> ControlAction {
     let mut action = ControlAction::none();
 
+    // ── 标题 ──
+    ui.add_space(4.0);
     ui.with_layout(Layout::top_down(Align::Center), |ui| {
-        ui.heading("🗺 Lian World");
+        ui.colored_label(theme::PINK, egui::RichText::new("✿ Lian World ✿").heading());
     });
+    ui.add_space(2.0);
     ui.separator();
 
-    // ── world size ──
-    ui.label("世界尺寸");
+    // ── 世界尺寸 ──
+    ui.colored_label(theme::BLUE_LIGHT, "◈ 世界尺寸");
     ui.radio_value(world_size, WorldSizeSelection::Small, "小 (4200×1200)");
     ui.radio_value(world_size, WorldSizeSelection::Medium, "中 (6400×1800)");
     ui.radio_value(world_size, WorldSizeSelection::Large, "大 (8400×2400)");
 
     ui.separator();
 
-    // ── seed input ──
-    ui.label("种子");
+    // ── 种子输入 ──
+    ui.colored_label(theme::BLUE_LIGHT, "◈ 种子");
     ui.horizontal(|ui| {
         let text_edit = egui::TextEdit::singleline(seed_input)
             .hint_text("输入种子 (十六进制/十进制)")
@@ -113,45 +117,81 @@ pub fn show_control_panel(
 
     ui.separator();
 
-    // ── progress ──
-    ui.label("生成进度");
+    // ── 生成进度（自定义粉蓝渐变进度条）──
+    ui.colored_label(theme::BLUE_LIGHT, "◈ 生成进度");
     let progress = if total == 0 {
         0.0
     } else {
         executed as f32 / total as f32
     };
-    ui.add(ProgressBar::new(progress).show_percentage());
-    ui.label(format!("子步骤: {executed}/{total}"));
+    
+    // 自定义渐变进度条
+    let desired_size = Vec2::new(ui.available_width(), 18.0);
+    let (rect, _response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+    let painter = ui.painter();
+    
+    // 背景
+    painter.rect_filled(rect, 4.0, theme::BG_WIDGET);
+    
+    // 填充条 — 粉→蓝渐变
+    if progress > 0.0 {
+        let fill_width = rect.width() * progress;
+        let fill_rect = Rect::from_min_size(rect.min, Vec2::new(fill_width, rect.height()));
+        
+        // 用当前进度对应的颜色填充
+        let fill_color = theme::progress_color(progress);
+        painter.rect_filled(fill_rect, 4.0, fill_color);
+    }
+    
+    // 进度文字
+    let text = format!("{:.0}%", progress * 100.0);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        &text,
+        egui::FontId::proportional(11.0),
+        theme::WHITE,
+    );
+    
+    ui.label(egui::RichText::new(format!("子步骤: {executed}/{total}")).color(theme::TEXT_SECONDARY).small());
 
     ui.separator();
 
-    // ── step controls (4 buttons) ──
-    ui.label("步进控制");
+    // ── 步进控制 ──
+    ui.colored_label(theme::BLUE_LIGHT, "◈ 步进控制");
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(executed > 0, egui::Button::new("◀◀"))
-            .on_hover_text("大步后退 (-1.0 回到阶段开头)")
+            .add_enabled(executed > 0, egui::Button::new(
+                egui::RichText::new("⏮").color(theme::PINK)
+            ))
+            .on_hover_text("大步后退 (回到阶段开头)")
             .clicked()
         {
             action.step_backward_phase = true;
         }
         if ui
-            .add_enabled(executed > 0, egui::Button::new("◀"))
-            .on_hover_text("小步后退 (-0.1)")
+            .add_enabled(executed > 0, egui::Button::new(
+                egui::RichText::new("◂").color(theme::PINK_LIGHT)
+            ))
+            .on_hover_text("小步后退")
             .clicked()
         {
             action.step_backward_sub = true;
         }
         if ui
-            .add_enabled(executed < total, egui::Button::new("▶"))
-            .on_hover_text("小步前进 (+0.1)")
+            .add_enabled(executed < total, egui::Button::new(
+                egui::RichText::new("▸").color(theme::BLUE_LIGHT)
+            ))
+            .on_hover_text("小步前进")
             .clicked()
         {
             action.step_forward_sub = true;
         }
         if ui
-            .add_enabled(executed < total, egui::Button::new("▶▶"))
-            .on_hover_text("大步前进 (+1.0 执行完当前阶段)")
+            .add_enabled(executed < total, egui::Button::new(
+                egui::RichText::new("⏭").color(theme::BLUE)
+            ))
+            .on_hover_text("大步前进 (执行完当前阶段)")
             .clicked()
         {
             action.step_forward_phase = true;
@@ -160,16 +200,16 @@ pub fn show_control_panel(
 
     ui.separator();
 
-    // ── phase/step list (two-level) ──
-    ui.label("步骤列表");
+    // ── 步骤列表 ──
+    ui.colored_label(theme::BLUE_LIGHT, "◈ 步骤列表");
     ScrollArea::vertical()
         .max_height(300.0)
         .show(ui, |ui| {
             for phase in phase_info {
                 let (phase_prefix, phase_color) = match phase.status {
-                    StepStatus::Completed => ("✓", egui::Color32::from_rgb(100, 200, 100)),
-                    StepStatus::Current => ("▶", egui::Color32::from_rgb(100, 180, 255)),
-                    StepStatus::Pending => ("  ", egui::Color32::from_gray(120)),
+                    StepStatus::Completed => (theme::STEP_COMPLETED_SYMBOL, theme::STEP_COMPLETED_COLOR),
+                    StepStatus::Current => (theme::STEP_CURRENT_SYMBOL, theme::STEP_CURRENT_COLOR),
+                    StepStatus::Pending => (theme::STEP_PENDING_SYMBOL, theme::STEP_PENDING_COLOR),
                 };
                 let phase_label = format!(
                     "{phase_prefix} {}. {}",
@@ -182,9 +222,9 @@ pub fn show_control_panel(
 
                 for sub in &phase.sub_steps {
                     let (sub_prefix, sub_color) = match sub.status {
-                        StepStatus::Completed => ("✓", egui::Color32::from_rgb(80, 170, 80)),
-                        StepStatus::Current => ("→", egui::Color32::from_rgb(80, 160, 230)),
-                        StepStatus::Pending => ("·", egui::Color32::from_gray(100)),
+                        StepStatus::Completed => (theme::SUB_COMPLETED_SYMBOL, theme::SUB_COMPLETED_COLOR),
+                        StepStatus::Current => (theme::SUB_CURRENT_SYMBOL, theme::SUB_CURRENT_COLOR),
+                        StepStatus::Pending => (theme::SUB_PENDING_SYMBOL, theme::SUB_PENDING_COLOR),
                     };
                     
                     ui.horizontal(|ui| {
@@ -207,68 +247,80 @@ pub fn show_control_panel(
 
     ui.separator();
 
-    // ── actions ──
-    ui.label("生成操作");
+    // ── 生成操作 ──
+    ui.colored_label(theme::BLUE_LIGHT, "◈ 生成操作");
     ui.horizontal(|ui| {
-        if ui.button("🔄 一键生成").on_hover_text("新种子 → 重置 → 执行全部步骤").clicked() {
+        if ui.button(egui::RichText::new("✦ 一键生成").color(theme::PINK_LIGHT))
+            .on_hover_text("新种子 → 重置 → 执行全部步骤").clicked() {
             action.reset_and_step = true;
             action.run_all = true;
         }
-        if ui.button("♻ 重新初始化").on_hover_text("新种子 → 重置到第0步，可手动步进").clicked() {
+        if ui.button(egui::RichText::new("↻ 重新初始化").color(theme::BLUE_LIGHT))
+            .on_hover_text("新种子 → 重置到第0步").clicked() {
             action.reset_and_step = true;
         }
     });
     if ui
-        .add_enabled(executed < total, egui::Button::new("⏩ 执行到底"))
+        .add_enabled(executed < total, egui::Button::new(
+            egui::RichText::new("▶▶ 执行到底").color(theme::WHITE)
+        ))
         .on_hover_text("从当前步骤一直执行到最后")
         .clicked()
     {
         action.run_all = true;
     }
     
-    if ui.button("⚙ 当前步骤算法").on_hover_text("打开当前步骤的算法参数配置面板").clicked() {
+    if ui.button(egui::RichText::new("⚙ 算法参数").color(theme::TEXT_SECONDARY))
+        .on_hover_text("打开当前步骤的算法参数配置面板").clicked() {
         action.open_step_config = true;
     }
 
     ui.separator();
-    ui.label("导出 / 导入");
-    if ui.button("📸 导出 PNG").on_hover_text("将当前世界画面导出为 PNG 图片").clicked() {
+
+    // ── 导出 / 导入 ──
+    ui.colored_label(theme::BLUE_LIGHT, "◈ 导出 / 导入");
+    if ui.button(egui::RichText::new("🖼 导出 PNG").color(theme::TEXT_SECONDARY))
+        .on_hover_text("将当前世界画面导出为 PNG 图片").clicked() {
         action.export_png = true;
     }
     ui.horizontal(|ui| {
-        if ui.button("💾 导出 .lwd").on_hover_text("保存世界快照（可完整复现）").clicked() {
+        if ui.button(egui::RichText::new("💾 导出 .lwd").color(theme::TEXT_SECONDARY))
+            .on_hover_text("保存世界快照").clicked() {
             action.export_lwd = true;
         }
-        if ui.button("📂 导入 .lwd").on_hover_text("从存档文件恢复世界").clicked() {
+        if ui.button(egui::RichText::new("📂 导入 .lwd").color(theme::TEXT_SECONDARY))
+            .on_hover_text("从存档恢复世界").clicked() {
             action.import_lwd = true;
         }
     });
 
     ui.separator();
 
-    // ── zoom ──
-    ui.label("缩放");
+    // ── 缩放 ──
+    ui.colored_label(theme::BLUE_LIGHT, "◈ 缩放");
     ui.horizontal(|ui| {
-        if ui.button("+").clicked() {
+        if ui.button(egui::RichText::new("＋").color(theme::BLUE_LIGHT)).clicked() {
             action.zoom_in = true;
         }
-        if ui.button("-").clicked() {
+        if ui.button(egui::RichText::new("－").color(theme::PINK_LIGHT)).clicked() {
             action.zoom_out = true;
         }
-        if ui.button("重置").clicked() {
+        if ui.button(egui::RichText::new("⟲ 重置").color(theme::TEXT_SECONDARY)).clicked() {
             action.zoom_reset = true;
         }
     });
 
     ui.separator();
 
-    // ── overlay + layer config ──
-    ui.label("配置");
+    // ── 配置 ──
+    ui.colored_label(theme::BLUE_LIGHT, "◈ 配置");
     ui.horizontal(|ui| {
-        if ui.button("👁 可视化配置").on_hover_text("环境/层级的覆盖色、文字、分界线开关").clicked() {
+        if ui.button(egui::RichText::new("👁 可视化").color(theme::PINK_LIGHT))
+            .on_hover_text("环境/层级覆盖色、文字、分界线开关").clicked() {
             action.open_overlay_config = true;
         }
-        if ui.button("⚙ 层级配置").on_hover_text("编辑层级垂直分布").clicked() {
+        if ui.button(egui::RichText::new("⚙ 层级").color(theme::BLUE_LIGHT))
+            .on_hover_text("编辑层级垂直分布").clicked() {
             action.open_layer_config = true;
         }
     });

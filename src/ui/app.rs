@@ -18,6 +18,7 @@ use crate::ui::control_panel::{show_control_panel, ControlAction, WorldSizeSelec
 use crate::ui::layer_config::{show_layer_config_window, merge_runtime_field};
 use crate::ui::overlay_config::{show_overlay_config_window, OverlaySettings};
 use crate::ui::status_bar::show_status_bar;
+use crate::ui::theme;
 
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc");
 
@@ -72,6 +73,7 @@ pub struct LianWorldApp {
 impl LianWorldApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_chinese_font(&cc.egui_ctx);
+        theme::apply_theme(&cc.egui_ctx);
 
         let blocks_cfg = load_blocks_config().expect("blocks.json 加载失败");
         let biomes_cfg = load_biomes_config().expect("biome.json 加载失败");

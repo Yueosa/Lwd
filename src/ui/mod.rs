@@ -5,3 +5,4 @@ pub mod control_panel;
 pub mod layer_config;
 pub mod overlay_config;
 pub mod status_bar;
+pub mod theme;

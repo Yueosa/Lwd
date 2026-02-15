@@ -265,6 +265,85 @@ pub fn show_canvas(
         }
     }
 
+    // ── minimap (bottom-right thumbnail) ────────────────────
+    {
+        use crate::ui::theme;
+
+        let minimap_max_w: f32 = 180.0;
+        let minimap_max_h: f32 = 110.0;
+        let margin: f32 = 12.0;
+
+        // 按世界宽高比缩放
+        let world_aspect = world_width as f32 / world_height.max(1) as f32;
+        let (mw, mh) = if world_aspect > minimap_max_w / minimap_max_h {
+            (minimap_max_w, minimap_max_w / world_aspect)
+        } else {
+            (minimap_max_h * world_aspect, minimap_max_h)
+        };
+
+        let minimap_rect = Rect::from_min_size(
+            Pos2::new(rect.right() - mw - margin, rect.bottom() - mh - margin),
+            Vec2::new(mw, mh),
+        );
+
+        // 半透明背景
+        painter.rect_filled(
+            minimap_rect.expand(2.0),
+            4.0,
+            Color32::from_rgba_unmultiplied(30, 30, 40, 200),
+        );
+
+        // 绘制世界缩略图
+        painter.image(
+            texture.id(),
+            minimap_rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+        );
+
+        // 计算当前可视区域在世界坐标中的范围
+        let vis_left = ((rect.left() - image_rect.left()) / viewport.zoom).clamp(0.0, world_width as f32);
+        let vis_top = ((rect.top() - image_rect.top()) / viewport.zoom).clamp(0.0, world_height as f32);
+        let vis_right = ((rect.right() - image_rect.left()) / viewport.zoom).clamp(0.0, world_width as f32);
+        let vis_bottom = ((rect.bottom() - image_rect.top()) / viewport.zoom).clamp(0.0, world_height as f32);
+
+        // 映射到 minimap 坐标
+        let scale_x = mw / world_width as f32;
+        let scale_y = mh / world_height as f32;
+        let vp_rect = Rect::from_min_max(
+            Pos2::new(
+                minimap_rect.left() + vis_left * scale_x,
+                minimap_rect.top() + vis_top * scale_y,
+            ),
+            Pos2::new(
+                minimap_rect.left() + vis_right * scale_x,
+                minimap_rect.top() + vis_bottom * scale_y,
+            ),
+        );
+
+        // 视口矩形指示器（蓝色边框 + 半透明填充）
+        let vp_clipped = vp_rect.intersect(minimap_rect);
+        if vp_clipped.width() > 0.0 && vp_clipped.height() > 0.0 {
+            painter.rect_filled(
+                vp_clipped,
+                0.0,
+                Color32::from_rgba_unmultiplied(91, 206, 250, 35),
+            );
+            painter.rect_stroke(
+                vp_clipped,
+                0.0,
+                Stroke::new(1.5, theme::BLUE_LIGHT),
+            );
+        }
+
+        // minimap 边框 
+        painter.rect_stroke(
+            minimap_rect,
+            4.0,
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(91, 206, 250, 100)),
+        );
+    }
+
     // ── drag to pan ──────────────────────────────────────────
     if response.dragged() {
         let delta = response.drag_delta();
