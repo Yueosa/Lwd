@@ -1,6 +1,5 @@
 pub mod biome;
 pub mod blocks;
-pub mod steps;
 pub mod world;
 
 use std::error::Error;
