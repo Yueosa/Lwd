@@ -20,7 +20,7 @@ pub fn show_canvas(
 
     let checker = Color32::from_gray(28);
     let checker2 = Color32::from_gray(35);
-    let tile = 24.0;
+    let tile = 48.0;
     let painter = ui.painter_at(rect);
 
     let cols = ((rect.width() / tile).ceil() as i32).max(1);
@@ -51,7 +51,7 @@ pub fn show_canvas(
     );
 
     if response.dragged() {
-        let delta = response.drag_delta();
+        let delta = ui.ctx().input(|i| i.pointer.delta());
         viewport.pan(delta.x, delta.y);
     }
 
