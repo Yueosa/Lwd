@@ -1,3 +1,4 @@
+mod algorithms;
 mod config;
 mod core;
 mod generation;
