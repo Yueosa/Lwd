@@ -3,6 +3,9 @@
 //! 管理一组 [`PhaseAlgorithm`] 模块的执行顺序，支持子步骤/阶段粒度的前进/后退。
 //! 每个子步骤使用从主种子派生的确定性 RNG，因此从头回放总能复现相同的世界。
 
+use std::any::Any;
+use std::collections::HashMap;
+
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -60,6 +63,8 @@ pub struct GenerationPipeline {
     seed: u64,
     /// 共享的环境地图状态
     biome_map: Option<BiomeMap>,
+    /// 通用共享状态容器（跨算法/跨步骤）
+    shared_state: HashMap<String, Box<dyn Any>>,
     /// 环境定义（传给 RuntimeContext）
     biome_definitions: Vec<BiomeDefinition>,
     /// 当前执行位置：指向下一个要执行的子步骤
@@ -73,6 +78,7 @@ impl GenerationPipeline {
             algorithms: Vec::new(),
             seed,
             biome_map: None,
+            shared_state: HashMap::new(),
             biome_definitions,
             current_phase: 0,
             current_sub: 0,
@@ -198,6 +204,7 @@ impl GenerationPipeline {
             biomes: &self.biome_definitions,
             rng: &mut rng,
             biome_map: &mut self.biome_map,
+            shared: &mut self.shared_state,
         };
 
         self.algorithms[self.current_phase]
@@ -252,6 +259,8 @@ impl GenerationPipeline {
     }
 
     /// 大步后退（-1.0）
+    ///
+    /// 语义：回到当前 phase 开头。如果已在 phase 开头，则回到前一个 phase 开头。
     pub fn step_backward_phase(
         &mut self,
         world: &mut World,
@@ -263,16 +272,23 @@ impl GenerationPipeline {
             return Ok(false);
         }
 
-        let target = if self.current_sub == 0 && self.current_phase > 0 {
+        // 当前 phase 的起始 flat 位置
+        let current_phase_start: usize = self.algorithms[..self.current_phase]
+            .iter()
+            .map(|a| a.meta().steps.len())
+            .sum();
+
+        let target = if executed > current_phase_start {
+            // 还没到 phase 开头 → 回到当前 phase 开头
+            current_phase_start
+        } else if self.current_phase > 0 {
+            // 已经在 phase 开头 → 回到前一个 phase 开头
             self.algorithms[..self.current_phase - 1]
                 .iter()
                 .map(|a| a.meta().steps.len())
                 .sum()
         } else {
-            self.algorithms[..self.current_phase]
-                .iter()
-                .map(|a| a.meta().steps.len())
-                .sum()
+            0
         };
 
         self.replay_to_flat(target, world, profile, blocks)?;
@@ -285,6 +301,10 @@ impl GenerationPipeline {
         self.current_phase = 0;
         self.current_sub = 0;
         self.biome_map = None;
+        self.shared_state.clear();
+        for algo in &mut self.algorithms {
+            algo.on_reset();
+        }
     }
 
     /// 从当前位置执行到底
@@ -410,8 +430,12 @@ impl GenerationPipeline {
     ) -> Result<(), String> {
         *world = World::new_air(world.width, world.height);
         self.biome_map = None;
+        self.shared_state.clear();
         self.current_phase = 0;
         self.current_sub = 0;
+        for algo in &mut self.algorithms {
+            algo.on_reset();
+        }
 
         for _ in 0..target_flat {
             self.step_forward_sub(world, profile, blocks)?;

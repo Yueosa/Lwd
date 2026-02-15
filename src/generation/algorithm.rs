@@ -10,6 +10,9 @@
 //! - **算法自描述**：每个算法模块完整定义自己的步骤列表和参数 schema。
 //! - **参数持久化**：引擎通过 `get_params()`/`set_params()` 做序列化，算法无需关心 I/O。
 
+use std::any::Any;
+use std::collections::HashMap;
+
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 
@@ -98,6 +101,20 @@ pub struct RuntimeContext<'a> {
     pub rng: &'a mut StdRng,
     /// 环境地图（共享状态，可读写）
     pub biome_map: &'a mut Option<BiomeMap>,
+    /// 通用共享状态容器
+    ///
+    /// 算法可在此存放跨步骤/跨阶段的中间数据（如高度图、洞穴标记等）。
+    /// 使用 `insert`/`get`/`get_mut` 并用 `downcast_ref`/`downcast_mut` 转换类型。
+    ///
+    /// # 示例
+    /// ```ignore
+    /// // 写入
+    /// ctx.shared.insert("heightmap".into(), Box::new(vec![0u32; w * h]));
+    /// // 读取
+    /// let hm = ctx.shared.get("heightmap")
+    ///     .and_then(|v| v.downcast_ref::<Vec<u32>>());
+    /// ```
+    pub shared: &'a mut HashMap<String, Box<dyn Any>>,
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -142,7 +159,7 @@ pub trait PhaseAlgorithm {
     /// 执行指定子步骤
     ///
     /// `step_index`：子步骤索引（从 0 开始，对应 `meta().steps` 的下标）
-    fn execute(&self, step_index: usize, ctx: &mut RuntimeContext) -> Result<(), String>;
+    fn execute(&mut self, step_index: usize, ctx: &mut RuntimeContext) -> Result<(), String>;
 
     /// 返回当前参数值（用于持久化）
     ///
@@ -155,6 +172,13 @@ pub trait PhaseAlgorithm {
     ///
     /// 默认实现忽略输入
     fn set_params(&mut self, _params: &serde_json::Value) {
+        // 默认忽略
+    }
+
+    /// 管线重置时调用，清理算法内部运行时状态
+    ///
+    /// 默认实现什么都不做。如果算法有步骤间传递的内部状态，应在此清理。
+    fn on_reset(&mut self) {
         // 默认忽略
     }
 }
