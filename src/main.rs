@@ -1,3 +1,22 @@
+mod config;
+mod core;
+mod rendering;
+mod ui;
+
+use ui::app::LianWorldApp;
+
 fn main() {
-    println!("Hello, Lianworld!");
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Lian Terraria World Generator")
+            .with_inner_size([1400.0, 860.0]),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Lian Terraria World Generator",
+        options,
+        Box::new(|cc| Box::new(LianWorldApp::new(cc))),
+    )
+    .expect("窗口启动失败");
 }
