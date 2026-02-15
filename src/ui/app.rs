@@ -114,6 +114,8 @@ impl LianWorldApp {
 
         self.world_profile = WorldProfile::from_config(&self.world_cfg, target, None)
             .expect("world size 配置非法");
+        // 重新加载 runtime.json 中的层级配置，避免切换尺寸后丢失
+        load_runtime_layers(&mut self.world_profile.layers);
         self.world = self.world_profile.create_world();
         self.pipeline.reset_all(&mut self.world);
         self.viewport.reset();

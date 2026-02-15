@@ -56,9 +56,14 @@ pub trait GenerationStep {
         false
     }
 
-    /// 绘制算法参数配置 UI（egui）
-    fn show_config_ui(&mut self, _ui: &mut egui::Ui) {
-        // 默认无配置
+    /// 返回当前算法参数（用于序列化/持久化），键值对形式
+    fn get_config(&self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// 从反序列化的值恢复算法参数
+    fn set_config(&mut self, _config: &serde_json::Value) {
+        // 默认忽略
     }
 }
 
