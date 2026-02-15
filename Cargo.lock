@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "LTwd"
+name = "Lwd"
 version = "0.1.0"
 dependencies = [
  "eframe",
