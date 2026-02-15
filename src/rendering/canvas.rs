@@ -16,17 +16,18 @@ pub fn build_color_map(blocks: &[BlockDefinition]) -> HashMap<u8, Color32> {
     map
 }
 
-pub fn world_to_color_image(world: &World, colors: &HashMap<u8, Color32>) -> ColorImage {
-    let mut pixels = Vec::with_capacity((world.width * world.height) as usize);
-
-    for &tile in &world.tiles {
-        let color = colors
-            .get(&tile)
-            .copied()
-            .unwrap_or(Color32::from_rgba_unmultiplied(255, 0, 255, 255));
-        pixels.push(color);
+/// Pre-build a 256-entry lookup table for O(1) block→color.
+pub fn build_color_lut(colors: &HashMap<u8, Color32>) -> [Color32; 256] {
+    let fallback = Color32::from_rgba_unmultiplied(255, 0, 255, 255);
+    let mut lut = [fallback; 256];
+    for (&id, &color) in colors {
+        lut[id as usize] = color;
     }
+    lut
+}
 
+pub fn world_to_color_image(world: &World, lut: &[Color32; 256]) -> ColorImage {
+    let pixels: Vec<Color32> = world.tiles.iter().map(|&t| lut[t as usize]).collect();
     ColorImage {
         size: [world.width as usize, world.height as usize],
         pixels,
