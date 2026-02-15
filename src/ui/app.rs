@@ -428,12 +428,43 @@ impl eframe::App for LianWorldApp {
 
         if self.show_algo_config {
             if let Some((_idx, algo)) = self.pipeline.current_algorithm_mut() {
-                let _changed = show_algo_config_window(
+                let result = show_algo_config_window(
                     ctx,
                     &mut self.show_algo_config,
                     algo,
                 );
-                // 参数变更后重新生成时会自动生效（通过 replay）
+                if result.replay_requested {
+                    // 回退到当前阶段开头，然后重新执行到当前位置
+                    let target = self.pipeline.executed_sub_steps();
+                    if target > 0 {
+                        match self.pipeline.step_backward_phase(
+                            &mut self.world,
+                            &self.world_profile,
+                            &self.blocks,
+                        ) {
+                            Ok(true) => {
+                                // 从阶段开头重新执行到之前的位置
+                                let current = self.pipeline.executed_sub_steps();
+                                for _ in current..target {
+                                    if let Err(e) = self.pipeline.step_forward_sub(
+                                        &mut self.world,
+                                        &self.world_profile,
+                                        &self.blocks,
+                                    ) {
+                                        self.last_status = format!("重新执行失败: {e}");
+                                        break;
+                                    }
+                                }
+                                self.texture_dirty = true;
+                                self.last_status = "已用新参数重新执行当前阶段".to_string();
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                self.last_status = format!("回退失败: {e}");
+                            }
+                        }
+                    }
+                }
             }
         }
 
