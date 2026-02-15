@@ -104,8 +104,9 @@ pub fn build_pipeline(seed: u64, biomes: Vec<BiomeDefinition>) -> GenerationPipe
 ## 确定性 RNG
 
 - 主种子 `seed` 在管线创建时设定
-- 每个子步骤的 RNG 由 `derive_step_seed(master, flat_index)` 派生
-- 相同 seed + 相同参数 = 完全相同的世界（无论步进顺序）
+- 每个子步骤的 RNG 由 `derive_step_seed(master, flat_index, world_width, world_height)` 派生
+- 世界尺寸参与种子派生：同一 seed + 不同世界尺寸 = 不同的生成结果（与泰拉瑞亚行为一致）
+- 相同 seed + 相同参数 + 相同世界尺寸 = 完全相同的世界（无论步进顺序）
 - 回退通过「从头重放」实现，利用确定性保证结果一致
 
 ## 生命周期回调
