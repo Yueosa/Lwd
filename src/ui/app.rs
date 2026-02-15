@@ -152,8 +152,8 @@ impl LianWorldApp {
             self.viewport.reset();
         }
 
-        if action.step_forward {
-            match self.pipeline.step_forward(
+        if action.step_forward_sub {
+            match self.pipeline.step_forward_sub(
                 &mut self.world,
                 &self.world_profile,
                 &self.blocks,
@@ -173,8 +173,29 @@ impl LianWorldApp {
             }
         }
 
-        if action.step_backward {
-            match self.pipeline.step_backward(
+        if action.step_forward_phase {
+            match self.pipeline.step_forward_phase(
+                &mut self.world,
+                &self.world_profile,
+                &self.blocks,
+            ) {
+                Ok(true) => {
+                    self.texture_dirty = true;
+                    if let Some(name) = self.pipeline.last_executed_name() {
+                        self.last_status = format!("阶段完成: {name}");
+                    }
+                }
+                Ok(false) => {
+                    self.last_status = "所有步骤已完成".to_string();
+                }
+                Err(e) => {
+                    self.last_status = format!("步骤失败: {e}");
+                }
+            }
+        }
+
+        if action.step_backward_sub {
+            match self.pipeline.step_backward_sub(
                 &mut self.world,
                 &self.world_profile,
                 &self.blocks,
@@ -182,9 +203,32 @@ impl LianWorldApp {
                 Ok(true) => {
                     self.texture_dirty = true;
                     self.last_status = format!(
-                        "已回退至步骤 {}/{}",
-                        self.pipeline.executed_count(),
-                        self.pipeline.total_steps()
+                        "已回退至子步骤 {}/{}",
+                        self.pipeline.executed_sub_steps(),
+                        self.pipeline.total_sub_steps()
+                    );
+                }
+                Ok(false) => {
+                    self.last_status = "已在起始状态".to_string();
+                }
+                Err(e) => {
+                    self.last_status = format!("回退失败: {e}");
+                }
+            }
+        }
+
+        if action.step_backward_phase {
+            match self.pipeline.step_backward_phase(
+                &mut self.world,
+                &self.world_profile,
+                &self.blocks,
+            ) {
+                Ok(true) => {
+                    self.texture_dirty = true;
+                    self.last_status = format!(
+                        "已回退至子步骤 {}/{}",
+                        self.pipeline.executed_sub_steps(),
+                        self.pipeline.total_sub_steps()
                     );
                 }
                 Ok(false) => {
@@ -216,8 +260,8 @@ impl LianWorldApp {
                     self.texture_dirty = true;
                     self.last_status = format!(
                         "全部步骤已完成 ({}/{})",
-                        self.pipeline.executed_count(),
-                        self.pipeline.total_steps()
+                        self.pipeline.executed_sub_steps(),
+                        self.pipeline.total_sub_steps()
                     );
                 }
                 Err(e) => {
@@ -274,9 +318,9 @@ impl eframe::App for LianWorldApp {
         self.refresh_texture_if_dirty(ctx);
 
         // ── left panel ──
-        let step_info = self.pipeline.step_info_list();
-        let executed = self.pipeline.executed_count();
-        let total = self.pipeline.total_steps();
+        let phase_info = self.pipeline.phase_info_list();
+        let executed = self.pipeline.executed_sub_steps();
+        let total = self.pipeline.total_sub_steps();
         let mut action = ControlAction::none();
 
         egui::SidePanel::left("control_panel")
@@ -286,7 +330,7 @@ impl eframe::App for LianWorldApp {
                 action = show_control_panel(
                     ui,
                     &mut self.world_size,
-                    &step_info,
+                    &phase_info,
                     executed,
                     total,
                     &mut self.show_biome_overlay,
