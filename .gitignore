@@ -1,2 +1,10 @@
+# 编译文件
 /target
+
+# 运行时参数
 generation.runtime.json
+
+# 管理文档
+*.md
+!README.md
+!docs/*.md
