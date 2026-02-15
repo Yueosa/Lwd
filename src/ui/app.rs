@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use eframe::egui;
-use egui::{Color32, TextureHandle};
+use egui::{Color32, FontData, FontDefinitions, FontFamily, TextureHandle};
 
 use crate::config::blocks::load_blocks_config;
 use crate::config::world::load_world_config;
@@ -12,6 +12,8 @@ use crate::rendering::viewport::ViewportState;
 use crate::ui::canvas_view::show_canvas;
 use crate::ui::control_panel::{show_control_panel, WorldSizeSelection};
 use crate::ui::status_bar::show_status_bar;
+
+const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc");
 
 pub struct LianWorldApp {
     world_size: WorldSizeSelection,
@@ -26,6 +28,8 @@ pub struct LianWorldApp {
 
 impl LianWorldApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        setup_chinese_font(&cc.egui_ctx);
+
         let blocks_cfg = load_blocks_config().expect("blocks.json 加载失败");
         let world_cfg = load_world_config().expect("world.json 加载失败");
 
@@ -78,6 +82,22 @@ impl LianWorldApp {
             self.world_profile.size.description, self.world.width, self.world.height
         );
     }
+}
+
+fn setup_chinese_font(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("cjk".to_owned(), FontData::from_static(CJK_FONT_BYTES));
+
+    if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
+        family.insert(0, "cjk".to_owned());
+    }
+    if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
+        family.insert(0, "cjk".to_owned());
+    }
+
+    ctx.set_fonts(fonts);
 }
 
 impl eframe::App for LianWorldApp {
