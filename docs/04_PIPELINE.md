@@ -4,11 +4,13 @@
 
 `GenerationPipeline` 是生成过程的核心调度器。它维护：
 
-- **阶段列表 (`phases`)** — 注册的 `Box<dyn PhaseAlgorithm>` 有序数组
-- **扁平步骤索引 (`flat_index`)** — 当前已执行的总子步骤数
+- **阶段列表 (`algorithms`)** — 注册的 `Box<dyn PhaseAlgorithm>` 有序数组
+- **步骤数缓存 (`step_counts`)** — 每个阶段的子步骤数 `Vec<usize>`，注册时缓存
+- **总步骤数缓存 (`total_steps_cache`)** — 所有阶段子步骤总数，`total_sub_steps()` O(1) 查询
+- **当前执行位置 (`current_phase` / `current_sub`)** — 指向下一个要执行的子步骤
 - **主种子 (`seed`)** — 全局 RNG 根种子
 - **共享状态 (`shared_state`)** — `HashMap<String, Box<dyn Any>>`（跨阶段传递）
-- **世界 (`world`)** + **配置 (`profile`)** — 生成目标
+- **PhaseInfo 缓存** — `cached_phase_info` + dirty flag，`phase_info_list()` 仅在步骤变化时重建
 
 ## 步进模型
 
@@ -23,7 +25,7 @@ Step:       s0   s1   s2    s0    s1  ...
 ```
 
 1. 通过 `flat_index` 计算当前 phase_index + step_index
-2. 以 `derive_step_seed(seed, flat_index)` 创建确定性 RNG
+2. 以 `derive_step_seed(seed, flat_index, world_width, world_height)` 创建确定性 RNG（世界尺寸参与派生）
 3. 构建 `RuntimeContext`
 4. 调用 `algorithm.execute(step_index, &mut ctx)`
 5. `flat_index += 1`
@@ -61,20 +63,23 @@ Step:       s0   s1   s2    s0    s1  ...
 // app.rs 中 update() 每帧执行
 const STEPS_PER_FRAME: usize = 3;
 
-if self.running_to_end {
+if self.running_to_end && !self.pipeline.is_complete() {
     for _ in 0..STEPS_PER_FRAME {
-        if self.pipeline.is_complete() {
-            self.running_to_end = false;
-            break;
-        }
-        self.pipeline.step_forward_sub(&self.blocks, &self.biomes)?;
+        if self.pipeline.is_complete() { break; }
+        self.pipeline.step_forward_sub(&mut self.world, &self.world_profile, &self.blocks)?;
     }
-    self.texture_dirty = true;
-    ctx.request_repaint(); // 立即请求下一帧
+    // 增量执行期间，每 5 帧才刷新一次纹理，大幅减少 GPU 上传开销
+    self.inc_frame_counter += 1;
+    let should_refresh = self.pipeline.is_complete() || self.inc_frame_counter % 5 == 0;
+    if should_refresh {
+        self.texture_dirty = true;
+    }
+    ctx.request_repaint();
 }
 ```
 
 - 每帧最多执行 3 个子步骤（可调）
+- **纹理增量刷新**：通过 `inc_frame_counter` 计数，仅每 5 帧刷新一次纹理，减少 GPU 上传开销
 - 通过 `ctx.request_repaint()` 保持帧循环活跃
 - 状态栏显示 "正在生成… X/Y" 进度
 - 导入 `.lwd` 存档时同样使用增量模式
@@ -83,9 +88,9 @@ if self.running_to_end {
 
 | 要素 | 机制 |
 |------|------|
-| RNG 种子 | `derive_step_seed(master, flat_index)` — 与执行历史无关 |
+| RNG 种子 | `derive_step_seed(master, flat_index, world_width, world_height)` — 与执行历史无关，世界尺寸参与派生 |
 | 执行顺序 | 扁平索引严格递增 |
 | 参数 | 序列化在 WorldSnapshot 中 |
-| 回退 | 从零重放（同 seed + 同参数 = 同结果） |
+| 回退 | 从零重放（同 seed + 同参数 + 同尺寸 = 同结果） |
 
 只要 seed 和参数相同，无论从头生成还是回退重放，**结果完全一致**。
