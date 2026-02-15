@@ -20,6 +20,17 @@ use crate::ui::status_bar::show_status_bar;
 
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc");
 
+/// 获取 runtime.json 的可靠路径（可执行文件同级目录下）
+pub fn runtime_json_path() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("generation.runtime.json");
+        }
+    }
+    // fallback: 当前工作目录
+    std::path::PathBuf::from("generation.runtime.json")
+}
+
 pub struct LianWorldApp {
     // ── config (loaded once) ──
     world_cfg: WorldConfig,
@@ -35,6 +46,8 @@ pub struct LianWorldApp {
 
     // ── generation ──
     pipeline: GenerationPipeline,
+    /// 是否正在后台逐帧执行（替代同步 run_all 阻塞 UI）
+    running_to_end: bool,
 
     // ── rendering ──
     viewport: ViewportState,
@@ -44,6 +57,7 @@ pub struct LianWorldApp {
 
     // ── UI ──
     last_status: String,
+    hover_status: String,
     show_biome_overlay: bool,
     show_layer_overlay: bool,
     show_layer_config: bool,
@@ -95,11 +109,13 @@ impl LianWorldApp {
             world,
             world_profile,
             pipeline,
+            running_to_end: false,
             viewport: ViewportState::default(),
             texture,
             texture_dirty: false,
             biome_overlay_texture: None,
             last_status: "世界初始化完成".to_string(),
+            hover_status: String::new(),
             show_biome_overlay: saved_biome_ov,
             show_layer_overlay: saved_layer_ov,
             show_layer_config: false,
@@ -271,26 +287,9 @@ impl LianWorldApp {
             self.last_status = format!("已重置到第0步 (seed: {new_seed})");
         }
 
-        // ── "一键生成" or "执行到底": run remaining steps
+        // ── "一键生成" or "执行到底": start incremental run
         if action.run_all {
-            match self.pipeline.run_all(
-                &mut self.world,
-                &self.world_profile,
-                &self.blocks,
-            ) {
-                Ok(()) => {
-                    self.texture_dirty = true;
-                    self.last_status = format!(
-                        "全部步骤已完成 ({}/{})",
-                        self.pipeline.executed_sub_steps(),
-                        self.pipeline.total_sub_steps()
-                    );
-                }
-                Err(e) => {
-                    self.texture_dirty = true;
-                    self.last_status = format!("生成失败: {e}");
-                }
-            }
+            self.running_to_end = true;
         }
 
         // ── 导出 PNG
@@ -368,26 +367,15 @@ impl LianWorldApp {
                         self.pipeline.set_seed(snapshot.seed);
                         self.pipeline.restore_from_snapshot(&snapshot);
                         
-                        // 4) 重新执行全部步骤
+                        // 4) 增量重新执行全部步骤
                         self.pipeline.reset_all(&mut self.world);
-                        match self.pipeline.run_all(
-                            &mut self.world,
-                            &self.world_profile,
-                            &self.blocks,
-                        ) {
-                            Ok(()) => {
-                                self.texture_dirty = true;
-                                self.viewport.reset();
-                                self.last_status = format!(
-                                    "已从存档恢复 (seed: {})",
-                                    snapshot.seed
-                                );
-                            }
-                            Err(e) => {
-                                self.texture_dirty = true;
-                                self.last_status = format!("存档恢复执行失败: {e}");
-                            }
-                        }
+                        self.running_to_end = true;
+                        self.texture_dirty = true;
+                        self.viewport.reset();
+                        self.last_status = format!(
+                            "正在从存档恢复 (seed: {})…",
+                            snapshot.seed
+                        );
                         
                         save_runtime_ui_state(
                             self.world_size,
@@ -424,7 +412,7 @@ fn setup_chinese_font(ctx: &egui::Context) {
 fn load_runtime_layers(layers: &mut [crate::core::layer::LayerDefinition]) {
     use std::fs;
     
-    let runtime_path = "generation.runtime.json";
+    let runtime_path = runtime_json_path();
     if let Ok(content) = fs::read_to_string(runtime_path) {
         if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(layers_obj) = config.get("layers").and_then(|v| v.as_object()) {
@@ -451,7 +439,7 @@ fn load_runtime_ui_state() -> (WorldSizeSelection, bool, bool) {
     let mut biome_ov = false;
     let mut layer_ov = true;
     
-    let runtime_path = "generation.runtime.json";
+    let runtime_path = runtime_json_path();
     if let Ok(content) = fs::read_to_string(runtime_path) {
         if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(ui) = config.get("ui").and_then(|v| v.as_object()) {
@@ -497,7 +485,7 @@ fn save_runtime_ui_state(
     
     if let Ok(config) = merge_runtime_field("ui", ui_state) {
         let content = serde_json::to_string_pretty(&config).unwrap_or_default();
-        let _ = std::fs::write("generation.runtime.json", content);
+        let _ = std::fs::write(runtime_json_path(), content);
     }
 }
 
@@ -603,6 +591,45 @@ impl eframe::App for LianWorldApp {
 
         // ── dispatch actions ──
         self.handle_action(&action);
+
+        // ── incremental execution tick ──
+        // 每帧执行若干步骤，避免 run_all 阻塞 UI
+        if self.running_to_end && !self.pipeline.is_complete() {
+            const STEPS_PER_FRAME: usize = 3;
+            for _ in 0..STEPS_PER_FRAME {
+                if self.pipeline.is_complete() {
+                    break;
+                }
+                match self.pipeline.step_forward_sub(
+                    &mut self.world,
+                    &self.world_profile,
+                    &self.blocks,
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        self.running_to_end = false;
+                        self.last_status = format!("生成失败: {e}");
+                        break;
+                    }
+                }
+            }
+            self.texture_dirty = true;
+            self.last_status = format!(
+                "正在生成… {}/{}",
+                self.pipeline.executed_sub_steps(),
+                self.pipeline.total_sub_steps()
+            );
+            if self.pipeline.is_complete() {
+                self.running_to_end = false;
+                self.last_status = format!(
+                    "全部步骤已完成 ({}/{})",
+                    self.pipeline.executed_sub_steps(),
+                    self.pipeline.total_sub_steps()
+                );
+            }
+            ctx.request_repaint(); // 确保下一帧继续处理
+        }
+
         self.refresh_texture_if_dirty(ctx);
 
         // 如果 overlay 开关变化，保存 UI 状态
@@ -625,7 +652,7 @@ impl eframe::App for LianWorldApp {
                 let mem_mb = ((self.world.width as usize * self.world.height as usize * 4)
                     / (1024 * 1024))
                     .max(1);
-                show_status_bar(ui, fps, mem_mb, &self.last_status);
+                show_status_bar(ui, fps, mem_mb, &self.last_status, &self.hover_status);
             });
 
         // ── central canvas ──
@@ -652,8 +679,10 @@ impl eframe::App for LianWorldApp {
                         .get(&block_id)
                         .map(|s| s.as_str())
                         .unwrap_or("未知");
-                    self.last_status =
+                    self.hover_status =
                         format!("{name}(ID:{block_id}) @ ({}, {})", hover.x, hover.y);
+                } else {
+                    self.hover_status.clear();
                 }
             } else {
                 ui.label("画布纹理尚未初始化");
