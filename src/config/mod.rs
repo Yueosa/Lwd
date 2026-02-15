@@ -1,3 +1,4 @@
+pub mod biome;
 pub mod blocks;
 pub mod world;
 

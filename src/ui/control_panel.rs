@@ -13,6 +13,9 @@ pub struct ControlAction {
     pub step_backward: bool,
     pub run_all: bool,
     pub reset_and_step: bool,
+    pub biome_overlay_toggled: bool,
+    pub layer_overlay_toggled: bool,
+    pub open_layer_config: bool,
 }
 
 impl ControlAction {
@@ -25,6 +28,9 @@ impl ControlAction {
             step_backward: false,
             run_all: false,
             reset_and_step: false,
+            biome_overlay_toggled: false,
+            layer_overlay_toggled: false,
+            open_layer_config: false,
         }
     }
 }
@@ -52,6 +58,8 @@ pub fn show_control_panel(
     step_info: &[StepInfo],
     executed: usize,
     total: usize,
+    show_biome_overlay: &mut bool,
+    show_layer_overlay: &mut bool,
 ) -> ControlAction {
     let mut action = ControlAction::none();
 
@@ -152,6 +160,22 @@ pub fn show_control_panel(
             action.zoom_reset = true;
         }
     });
+
+    ui.separator();
+
+    // ── overlay ──
+    ui.label("可视化图层");
+    if ui.checkbox(show_biome_overlay, "显示环境划分").changed() {
+        action.biome_overlay_toggled = true;
+    }
+    if ui.checkbox(show_layer_overlay, "显示层级划分").changed() {
+        action.layer_overlay_toggled = true;
+    }
+    
+    // 层级配置按钮
+    if ui.button("⚙ 配置层级").clicked() {
+        action.open_layer_config = true;
+    }
 
     action
 }

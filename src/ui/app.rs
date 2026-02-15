@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use eframe::egui;
 use egui::{Color32, FontData, FontDefinitions, FontFamily, TextureHandle};
 
+use crate::config::biome::load_biomes_config;
 use crate::config::blocks::load_blocks_config;
 use crate::config::world::{load_world_config, WorldConfig};
+use crate::core::biome::{build_biome_definitions, BiomeDefinition};
 use crate::core::block::{build_block_definitions, BlockDefinition};
 use crate::core::world::{World, WorldProfile};
 use crate::generation::{build_default_pipeline, GenerationPipeline};
@@ -12,6 +14,7 @@ use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_
 use crate::rendering::viewport::ViewportState;
 use crate::ui::canvas_view::show_canvas;
 use crate::ui::control_panel::{show_control_panel, ControlAction, WorldSizeSelection};
+use crate::ui::layer_config::show_layer_config_window;
 use crate::ui::status_bar::show_status_bar;
 
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc");
@@ -20,6 +23,7 @@ pub struct LianWorldApp {
     // ── config (loaded once) ──
     world_cfg: WorldConfig,
     blocks: Vec<BlockDefinition>,
+    biomes: Vec<BiomeDefinition>,
     color_lut: [Color32; 256],
     block_names: HashMap<u8, String>,
 
@@ -38,6 +42,9 @@ pub struct LianWorldApp {
 
     // ── UI ──
     last_status: String,
+    show_biome_overlay: bool,
+    show_layer_overlay: bool,
+    show_layer_config: bool,
 }
 
 impl LianWorldApp {
@@ -45,19 +52,25 @@ impl LianWorldApp {
         setup_chinese_font(&cc.egui_ctx);
 
         let blocks_cfg = load_blocks_config().expect("blocks.json 加载失败");
+        let biomes_cfg = load_biomes_config().expect("biome.json 加载失败");
         let world_cfg = load_world_config().expect("world.json 加载失败");
 
         let blocks = build_block_definitions(&blocks_cfg);
+        let biomes = build_biome_definitions(&biomes_cfg);
         let color_lut = build_color_lut(&build_color_map(&blocks));
         let block_names: HashMap<u8, String> =
             blocks.iter().map(|b| (b.id, b.name.clone())).collect();
 
-        let world_profile =
+        let mut world_profile =
             WorldProfile::from_config(&world_cfg, "small", None).expect("world.json 配置非法");
+        
+        // 尝试从 runtime.json 加载层级配置
+        load_runtime_layers(&mut world_profile.layers);
+        
         let world = world_profile.create_world();
 
         let seed = rand::random::<u64>();
-        let pipeline = build_default_pipeline(seed);
+        let pipeline = build_default_pipeline(seed, biomes.clone());
 
         let image = world_to_color_image(&world, &color_lut);
         let texture = Some(cc.egui_ctx.load_texture(
@@ -69,6 +82,7 @@ impl LianWorldApp {
         Self {
             world_cfg,
             blocks,
+            biomes,
             color_lut,
             block_names,
             world_size: WorldSizeSelection::Small,
@@ -79,6 +93,9 @@ impl LianWorldApp {
             texture,
             texture_dirty: false,
             last_status: "世界初始化完成".to_string(),
+            show_biome_overlay: false,
+            show_layer_overlay: true,
+            show_layer_config: false,
         }
     }
 
@@ -228,6 +245,29 @@ fn setup_chinese_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// 从 generation.runtime.json 加载层级配置（如果存在）
+fn load_runtime_layers(layers: &mut [crate::core::layer::LayerDefinition]) {
+    use std::fs;
+    
+    let runtime_path = "generation.runtime.json";
+    if let Ok(content) = fs::read_to_string(runtime_path) {
+        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(layers_obj) = config.get("layers").and_then(|v| v.as_object()) {
+                for layer in layers.iter_mut() {
+                    if let Some(layer_config) = layers_obj.get(&layer.key).and_then(|v| v.as_object()) {
+                        if let Some(start) = layer_config.get("start_percent").and_then(|v| v.as_u64()) {
+                            layer.start_percent = start as u8;
+                        }
+                        if let Some(end) = layer_config.get("end_percent").and_then(|v| v.as_u64()) {
+                            layer.end_percent = end as u8;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl eframe::App for LianWorldApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_world_size_change();
@@ -243,8 +283,15 @@ impl eframe::App for LianWorldApp {
             .resizable(true)
             .default_width(260.0)
             .show(ctx, |ui| {
-                action =
-                    show_control_panel(ui, &mut self.world_size, &step_info, executed, total);
+                action = show_control_panel(
+                    ui,
+                    &mut self.world_size,
+                    &step_info,
+                    executed,
+                    total,
+                    &mut self.show_biome_overlay,
+                    &mut self.show_layer_overlay,
+                );
                 ui.separator();
                 ui.label(format!("缩放: {:.0}%", self.viewport.zoom * 100.0));
                 ui.label(format!("方块数: {}", self.blocks.len()));
@@ -253,6 +300,26 @@ impl eframe::App for LianWorldApp {
                     self.world.width, self.world.height
                 ));
             });
+
+        // ── layer config window ──
+        if action.open_layer_config {
+            self.show_layer_config = true;
+        }
+        
+        if self.show_layer_config {
+            let changed = show_layer_config_window(
+                ctx,
+                &mut self.show_layer_config,
+                &mut self.world_profile.layers,
+                self.world.height,
+            );
+            
+            // 如果层级配置改变，刷新纹理（虽然现在只影响可视化，但保持一致性）
+            if changed {
+                // 可以在这里触发重新生成或只是更新状态
+                self.last_status = "层级配置已更新".to_string();
+            }
+        }
 
         // ── dispatch actions ──
         self.handle_action(&action);
@@ -279,12 +346,18 @@ impl eframe::App for LianWorldApp {
         // ── central canvas ──
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(texture) = &self.texture {
+                let biome_map = self.pipeline.state().biome_map.as_ref();
                 if let Some(hover) = show_canvas(
                     ui,
                     texture,
                     self.world.width,
                     self.world.height,
                     &mut self.viewport,
+                    biome_map,
+                    &self.biomes,
+                    &self.world_profile.layers,
+                    self.show_biome_overlay,
+                    self.show_layer_overlay,
                 ) {
                     let idx = (hover.y * self.world.width + hover.x) as usize;
                     let block_id = self.world.tiles.get(idx).copied().unwrap_or(0);

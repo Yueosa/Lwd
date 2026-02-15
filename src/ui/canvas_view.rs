@@ -1,5 +1,7 @@
 use egui::{Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Ui, Vec2};
 
+use crate::core::biome::{BiomeDefinition, BiomeMap};
+use crate::core::layer::LayerDefinition;
 use crate::rendering::viewport::ViewportState;
 
 #[derive(Debug, Clone, Copy)]
@@ -14,6 +16,11 @@ pub fn show_canvas(
     world_width: u32,
     world_height: u32,
     viewport: &mut ViewportState,
+    biome_map: Option<&BiomeMap>,
+    biome_definitions: &[BiomeDefinition],
+    layers: &[LayerDefinition],
+    show_biome_overlay: bool,
+    show_layer_overlay: bool,
 ) -> Option<HoverInfo> {
     let available = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(available, Sense::click_and_drag());
@@ -52,6 +59,94 @@ pub fn show_canvas(
         Color32::WHITE,
     );
     painter.rect_stroke(image_rect, 0.0, Stroke::new(1.0, Color32::from_gray(120)));
+
+    // ── biome overlay ──────────────────────────────────────────
+    if show_biome_overlay {
+        if let Some(biome_map) = biome_map {
+            for region in biome_map.regions() {
+                // 查找对应的 BiomeDefinition
+                let biome_def = biome_definitions.iter().find(|b| b.id == region.biome_id);
+                
+                if let Some(biome) = biome_def {
+                    let rgba = biome.overlay_color;
+                    let color = Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
+                    
+                    let x0 = image_rect.left() + region.start_x as f32 * viewport.zoom;
+                    let x1 = image_rect.left() + region.end_x as f32 * viewport.zoom;
+                    let y0 = image_rect.top();
+                    let y1 = image_rect.bottom();
+                    
+                    let region_rect = Rect::from_min_max(
+                        Pos2::new(x0, y0),
+                        Pos2::new(x1, y1),
+                    );
+                    
+                    painter.rect_filled(region_rect, 0.0, color);
+                    
+                    // 绘制环境名称（在区域中心）
+                    let center_x = (x0 + x1) / 2.0;
+                    let center_y = (y0 + y1) / 2.0;
+                    let text_pos = Pos2::new(center_x, center_y);
+                    painter.text(
+                        text_pos,
+                        egui::Align2::CENTER_CENTER,
+                        &biome.name,
+                        egui::FontId::proportional(16.0),
+                        Color32::WHITE,
+                    );
+                }
+            }
+        }
+    }
+
+    // ── layer overlay ──────────────────────────────────────────
+    if show_layer_overlay {
+        // 收集所有唯一的边界百分比值
+        let mut boundary_percents: Vec<u8> = Vec::new();
+        for layer in layers {
+            if !boundary_percents.contains(&layer.start_percent) {
+                boundary_percents.push(layer.start_percent);
+            }
+            if !boundary_percents.contains(&layer.end_percent) {
+                boundary_percents.push(layer.end_percent);
+            }
+        }
+        boundary_percents.sort();
+        
+        // 绘制所有边界线
+        for &pct in &boundary_percents {
+            let y_percent = pct as f32 / 100.0;
+            let y_world = (world_height as f32 * y_percent) as u32;
+            let y_screen = image_rect.top() + y_world as f32 * viewport.zoom;
+            
+            if y_screen >= image_rect.top() && y_screen <= image_rect.bottom() {
+                let start = Pos2::new(image_rect.left(), y_screen);
+                let end = Pos2::new(image_rect.right(), y_screen);
+                
+                painter.line_segment(
+                    [start, end],
+                    Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 255, 255, 120)),
+                );
+            }
+        }
+        
+        // 在每个层级的中心位置绘制名称标签
+        for layer in layers {
+            let mid_percent = (layer.start_percent as f32 + layer.end_percent as f32) / 2.0 / 100.0;
+            let mid_y = image_rect.top() + world_height as f32 * mid_percent * viewport.zoom;
+            
+            if mid_y >= image_rect.top() && mid_y <= image_rect.bottom() {
+                let label_pos = Pos2::new(image_rect.left() + 10.0, mid_y);
+                painter.text(
+                    label_pos,
+                    egui::Align2::LEFT_CENTER,
+                    &layer.key,
+                    egui::FontId::proportional(12.0),
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 180),
+                );
+            }
+        }
+    }
 
     // ── drag to pan ──────────────────────────────────────────
     if response.dragged() {

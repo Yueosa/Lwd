@@ -4,7 +4,7 @@ use rand::SeedableRng;
 use crate::core::block::BlockDefinition;
 use crate::core::world::{World, WorldProfile};
 
-use super::step::{GenerationContext, GenerationStep, StepInfo, StepStatus};
+use super::step::{GenerationContext, GenerationState, GenerationStep, StepInfo, StepStatus};
 
 /// Manages an ordered list of generation steps.
 ///
@@ -17,6 +17,8 @@ pub struct GenerationPipeline {
     executed: usize,
     /// Master seed — each step derives a sub-seed from this.
     seed: u64,
+    /// Shared state across steps (e.g., BiomeMap).
+    state: GenerationState,
 }
 
 impl GenerationPipeline {
@@ -25,6 +27,7 @@ impl GenerationPipeline {
             steps: Vec::new(),
             executed: 0,
             seed,
+            state: GenerationState::new(),
         }
     }
 
@@ -64,6 +67,11 @@ impl GenerationPipeline {
         self.seed = seed;
     }
 
+    /// 获取当前生成状态的引用 (用于 UI 访问 BiomeMap)
+    pub fn state(&self) -> &GenerationState {
+        &self.state
+    }
+
     // ── stepping ────────────────────────────────────────────
 
     /// Execute the next pending step.
@@ -87,6 +95,7 @@ impl GenerationPipeline {
             profile,
             blocks,
             rng: &mut rng,
+            state: &mut self.state,
         };
 
         self.steps[self.executed]
@@ -118,6 +127,7 @@ impl GenerationPipeline {
     pub fn reset_all(&mut self, world: &mut World) {
         *world = World::new_air(world.width, world.height);
         self.executed = 0;
+        self.state = GenerationState::new();
     }
 
     /// Run every remaining step at once.
@@ -164,6 +174,7 @@ impl GenerationPipeline {
         blocks: &[BlockDefinition],
     ) -> Result<(), String> {
         *world = World::new_air(world.width, world.height);
+        self.state = GenerationState::new();
 
         for i in 0..target {
             let step_seed = derive_step_seed(self.seed, i);
@@ -173,6 +184,7 @@ impl GenerationPipeline {
                 profile,
                 blocks,
                 rng: &mut rng,
+                state: &mut self.state,
             };
             self.steps[i]
                 .execute(&mut ctx)
