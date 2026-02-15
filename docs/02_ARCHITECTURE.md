@@ -92,14 +92,15 @@
 | | color.rs | 24 | ColorRgba |
 | src/config/ | blocks.rs / biome.rs / world.rs | ~80 | JSON 配置加载 |
 | src/generation/ | algorithm.rs | 170 | PhaseAlgorithm trait 定义 |
-| | pipeline.rs | 450 | 流水线引擎 |
+| | pipeline.rs | 475 | 流水线引擎（含缓存） |
 | | snapshot.rs | 150 | 快照模型 + PNG 导出 |
 | src/algorithms/ | biome_division.rs | 340 | 环境判定算法模块 |
 | src/rendering/ | canvas.rs | 35 | 颜色 LUT 构建 |
 | | viewport.rs | 35 | 缩放/平移状态 |
-| src/ui/ | app.rs | 680 | 主应用状态中枢 |
-| | control_panel.rs | 260 | 左侧控制面板 |
+| src/ui/ | app.rs | 790 | 主应用状态中枢 |
+| | control_panel.rs | 278 | 左侧控制面板 |
 | | algo_config.rs | 170 | 算法参数配置窗口 |
-| | canvas_view.rs | 300 | 中央画布渲染 |
+| | canvas_view.rs | 310 | 中央画布渲染 |
 | | layer_config.rs | 273 | 层级配置窗口 |
-| | status_bar.rs | 15 | 底部状态栏 |
+| | overlay_config.rs | 85 | 可视化覆盖层配置窗口 |
+| | status_bar.rs | 25 | 底部状态栏 |
