@@ -132,8 +132,8 @@ impl LianWorldApp {
         self.last_status = format!(
             "已切换: {} ({}×{})",
             self.world_profile.size.description, self.world.width, self.world.height
-        );
-    }
+        );        // 保存 UI 状态
+        save_runtime_ui_state(self.world_size, self.show_biome_overlay, self.show_layer_overlay);    }
 
     // ── texture management ──────────────────────────────────
 
@@ -437,6 +437,11 @@ impl eframe::App for LianWorldApp {
         // ── dispatch actions ──
         self.handle_action(&action);
         self.refresh_texture_if_dirty(ctx);
+
+        // 如果 overlay 开关变化，保存 UI 状态
+        if action.biome_overlay_toggled || action.layer_overlay_toggled {
+            save_runtime_ui_state(self.world_size, self.show_biome_overlay, self.show_layer_overlay);
+        }
 
         // ── bottom bar ──
         egui::TopBottomPanel::bottom("status_bar")
