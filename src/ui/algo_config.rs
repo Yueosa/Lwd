@@ -81,12 +81,12 @@ fn render_param(ui: &mut Ui, def: &ParamDef, params: &mut serde_json::Value) -> 
                 .unwrap_or_else(|| def.default.as_f64().unwrap_or(0.0));
             let mut val = current;
             let resp = ui.add(
-                egui::Slider::new(&mut val, (*min as f32)..=(*max as f32))
+                egui::Slider::new(&mut val, *min..=*max)
                     .text(&def.key)
                     .clamp_to_range(true),
             );
             if resp.changed() {
-                obj.insert(def.key.clone(), serde_json::json!(val as f64));
+                obj.insert(def.key.clone(), serde_json::json!(val));
                 changed = true;
             }
         }
