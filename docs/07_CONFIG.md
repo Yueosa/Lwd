@@ -83,11 +83,15 @@ src/assets/world.json              └ ui (UI 状态)
   },
   "ui": {
     "world_size": "small",
-    "show_biome_overlay": true,
-    "show_layer_overlay": true
+    "show_biome_color": false,
+    "show_biome_labels": false,
+    "show_layer_lines": true,
+    "show_layer_labels": true
   }
 }
 ```
+
+> **兼容性**：加载时会自动识别旧格式的 `show_biome_overlay` / `show_layer_overlay` 字段并映射到新的 4 个独立开关。
 
 ### 路径解析
 
