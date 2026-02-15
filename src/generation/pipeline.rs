@@ -1,93 +1,134 @@
+//! # 生成流水线
+//!
+//! 管理一组 [`PhaseAlgorithm`] 模块的执行顺序，支持子步骤/阶段粒度的前进/后退。
+//! 每个子步骤使用从主种子派生的确定性 RNG，因此从头回放总能复现相同的世界。
+
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
+use crate::core::biome::{BiomeDefinition, BiomeMap};
 use crate::core::block::BlockDefinition;
 use crate::core::world::{World, WorldProfile};
 
-use super::step::{
-    GenerationContext, GenerationPhase, GenerationState, PhaseInfo, StepStatus, SubStepInfo,
-};
+use super::algorithm::{PhaseAlgorithm, RuntimeContext};
 
-/// Manages an ordered list of generation phases, each containing sub-steps.
-///
-/// Supports forward/backward stepping at both phase and sub-step granularity.
-/// Each sub-step gets its own RNG derived from a master seed, so
-/// replaying from scratch always reproduces the same world.
+// ═══════════════════════════════════════════════════════════
+// UI 信息快照（只读，供控制面板展示）
+// ═══════════════════════════════════════════════════════════
+
+/// 步骤状态
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepStatus {
+    Completed,
+    Current,
+    Pending,
+}
+
+/// 单个子步骤的 UI 快照
+#[derive(Debug, Clone)]
+pub struct SubStepInfo {
+    /// 显示用 ID（如 "1.0", "1.1"）
+    pub display_id: String,
+    pub name: String,
+    pub description: String,
+    pub doc_url: Option<String>,
+    pub status: StepStatus,
+}
+
+/// 单个阶段的 UI 快照
+#[derive(Debug, Clone)]
+pub struct PhaseInfo {
+    /// 阶段序号（从 1 开始显示）
+    pub display_index: u32,
+    /// 算法模块 ID
+    pub algorithm_id: String,
+    pub name: String,
+    pub description: String,
+    pub has_params: bool,
+    pub sub_steps: Vec<SubStepInfo>,
+    pub status: StepStatus,
+}
+
+// ═══════════════════════════════════════════════════════════
+// 流水线
+// ═══════════════════════════════════════════════════════════
+
 pub struct GenerationPipeline {
-    phases: Vec<GenerationPhase>,
-    /// Master seed — each sub-step derives a sub-seed from this.
+    /// 已注册的算法模块（有序）
+    algorithms: Vec<Box<dyn PhaseAlgorithm>>,
+    /// 主种子
     seed: u64,
-    /// Shared state across steps (e.g., BiomeMap).
-    state: GenerationState,
-    /// Current execution position: (phase_index, sub_step_index within that phase).
-    /// Points to the *next* sub-step to execute.
-    /// When all done: current_phase == phases.len()
+    /// 共享的环境地图状态
+    biome_map: Option<BiomeMap>,
+    /// 环境定义（传给 RuntimeContext）
+    biome_definitions: Vec<BiomeDefinition>,
+    /// 当前执行位置：指向下一个要执行的子步骤
     current_phase: usize,
     current_sub: usize,
 }
 
 impl GenerationPipeline {
-    pub fn new(seed: u64) -> Self {
+    pub fn new(seed: u64, biome_definitions: Vec<BiomeDefinition>) -> Self {
         Self {
-            phases: Vec::new(),
+            algorithms: Vec::new(),
             seed,
-            state: GenerationState::new(),
+            biome_map: None,
+            biome_definitions,
             current_phase: 0,
             current_sub: 0,
         }
     }
 
-    /// Append a phase to the pipeline.
-    pub fn register_phase(&mut self, phase: GenerationPhase) {
-        self.phases.push(phase);
+    /// 注册一个算法模块
+    pub fn register(&mut self, algorithm: Box<dyn PhaseAlgorithm>) {
+        self.algorithms.push(algorithm);
     }
 
-    // ── accessors ───────────────────────────────────────────
+    // ── 访问器 ──────────────────────────────────────────────
 
-    /// Total number of sub-steps across all phases.
+    /// 总子步骤数
     pub fn total_sub_steps(&self) -> usize {
-        self.phases.iter().map(|p| p.sub_steps.len()).sum()
+        self.algorithms
+            .iter()
+            .map(|a| a.meta().steps.len())
+            .sum()
     }
 
-    /// Number of sub-steps already executed.
+    /// 已执行子步骤数
     pub fn executed_sub_steps(&self) -> usize {
-        let full_phases: usize = self.phases[..self.current_phase]
+        let full: usize = self.algorithms[..self.current_phase]
             .iter()
-            .map(|p| p.sub_steps.len())
+            .map(|a| a.meta().steps.len())
             .sum();
-        full_phases + self.current_sub
+        full + self.current_sub
     }
 
     pub fn is_complete(&self) -> bool {
-        self.current_phase >= self.phases.len()
+        self.current_phase >= self.algorithms.len()
     }
 
-    /// 当前步骤的显示ID (如 "1.0", "1.1", "2.0")
-    pub fn current_step_id(&self) -> Option<String> {
-        if self.current_phase >= self.phases.len() {
+    /// 当前步骤的显示 ID (如 "1.0", "2.1")
+    pub fn current_step_display_id(&self) -> Option<String> {
+        if self.current_phase >= self.algorithms.len() {
             return None;
         }
-        let phase = &self.phases[self.current_phase];
-        if self.current_sub < phase.sub_steps.len() {
-            Some(phase.sub_steps[self.current_sub].meta.id.clone())
+        let meta = self.algorithms[self.current_phase].meta();
+        if self.current_sub < meta.steps.len() {
+            Some(format!("{}.{}", self.current_phase + 1, self.current_sub))
         } else {
             None
         }
     }
 
-    /// Name of the step that was last executed, or `None`.
+    /// 最后执行的步骤名称
     pub fn last_executed_name(&self) -> Option<String> {
-        // Find position of the step just before current
-        if self.current_phase == 0 && self.current_sub == 0 {
+        let executed = self.executed_sub_steps();
+        if executed == 0 {
             return None;
         }
-
-        let (p, s) = self.prev_position()?;
-        let phase = &self.phases[p];
-        Some(format!(
-            "{} - {}",
-            phase.name, phase.sub_steps[s].meta.name
-        ))
+        let (p, s) = self.flat_to_position(executed - 1);
+        let meta = self.algorithms[p].meta();
+        Some(format!("{} - {}", meta.name, meta.steps[s].name))
     }
 
     pub fn seed(&self) -> u64 {
@@ -98,43 +139,41 @@ impl GenerationPipeline {
         self.seed = seed;
     }
 
-    /// 获取当前生成状态的引用 (用于 UI 访问 BiomeMap)
-    pub fn state(&self) -> &GenerationState {
-        &self.state
+    /// 获取 biome_map 引用（供 UI 渲染 overlay）
+    pub fn biome_map(&self) -> Option<&BiomeMap> {
+        self.biome_map.as_ref()
     }
 
-    /// 当前所在 phase index（用于 UI 判断"打开当前步骤配置"）
     pub fn current_phase_index(&self) -> usize {
         self.current_phase
     }
 
-    /// 当前所在 sub-step index
     pub fn current_sub_index(&self) -> usize {
         self.current_sub
     }
 
-    /// 获取当前子步骤的可变引用，用于打开配置面板
-    pub fn current_sub_step_mut(
-        &mut self,
-    ) -> Option<&mut super::step::PhaseSubStep> {
-        if self.current_phase >= self.phases.len() {
-            return None;
-        }
-        let phase = &mut self.phases[self.current_phase];
-        // 显示的是"当前"子步骤，即已执行的最后一步或下一步
-        // 如果 current_sub > 0，显示上一步的配置更合理
-        if self.current_sub > 0 && self.current_sub <= phase.sub_steps.len() {
-            Some(&mut phase.sub_steps[self.current_sub - 1])
-        } else if !phase.sub_steps.is_empty() {
-            Some(&mut phase.sub_steps[0])
-        } else {
-            None
-        }
+    /// 获取指定阶段的算法模块的可变引用
+    pub fn algorithm_mut(&mut self, phase_index: usize) -> Option<&mut Box<dyn PhaseAlgorithm>> {
+        self.algorithms.get_mut(phase_index)
     }
 
-    // ── stepping ────────────────────────────────────────────
+    /// 获取"当前"算法模块（可用于打开配置面板）
+    /// 如果已执行了一些步骤，返回最后执行的那个算法模块
+    pub fn current_algorithm_mut(&mut self) -> Option<(usize, &mut Box<dyn PhaseAlgorithm>)> {
+        if self.algorithms.is_empty() {
+            return None;
+        }
+        let idx = if self.current_sub > 0 || self.current_phase == 0 {
+            self.current_phase.min(self.algorithms.len() - 1)
+        } else {
+            self.current_phase - 1
+        };
+        Some((idx, &mut self.algorithms[idx]))
+    }
 
-    /// Execute the next pending sub-step (小步 +0.1).
+    // ── 步进控制 ────────────────────────────────────────────
+
+    /// 小步前进（+0.1）
     pub fn step_forward_sub(
         &mut self,
         world: &mut World,
@@ -149,24 +188,25 @@ impl GenerationPipeline {
         let step_seed = derive_step_seed(self.seed, flat_index);
         let mut rng = StdRng::seed_from_u64(step_seed);
 
-        let phase = &self.phases[self.current_phase];
-        let sub = &phase.sub_steps[self.current_sub];
+        let meta = self.algorithms[self.current_phase].meta();
+        let step_count = meta.steps.len();
 
-        let mut ctx = GenerationContext {
+        let mut ctx = RuntimeContext {
             world,
             profile,
             blocks,
+            biomes: &self.biome_definitions,
             rng: &mut rng,
-            state: &mut self.state,
+            biome_map: &mut self.biome_map,
         };
 
-        sub.step
-            .execute(&mut ctx)
-            .map_err(|e| format!("{} - {}: {e}", phase.name, sub.meta.name))?;
+        self.algorithms[self.current_phase]
+            .execute(self.current_sub, &mut ctx)
+            .map_err(|e| format!("{}: {e}", meta.name))?;
 
-        // Advance position
+        // 推进位置
         self.current_sub += 1;
-        if self.current_sub >= phase.sub_steps.len() {
+        if self.current_sub >= step_count {
             self.current_phase += 1;
             self.current_sub = 0;
         }
@@ -174,7 +214,7 @@ impl GenerationPipeline {
         Ok(true)
     }
 
-    /// Execute all remaining sub-steps in the current phase (大步 +1.0).
+    /// 大步前进（+1.0）
     pub fn step_forward_phase(
         &mut self,
         world: &mut World,
@@ -188,7 +228,6 @@ impl GenerationPipeline {
         let target_phase = self.current_phase;
         let mut any_ran = false;
 
-        // Run until we leave this phase or complete everything
         while self.current_phase == target_phase && !self.is_complete() {
             self.step_forward_sub(world, profile, blocks)?;
             any_ran = true;
@@ -197,7 +236,7 @@ impl GenerationPipeline {
         Ok(any_ran)
     }
 
-    /// Undo one sub-step by replaying from scratch (小步 -0.1).
+    /// 小步后退（-0.1）
     pub fn step_backward_sub(
         &mut self,
         world: &mut World,
@@ -212,7 +251,7 @@ impl GenerationPipeline {
         Ok(true)
     }
 
-    /// Undo to the start of the current phase (大步 -1.0).
+    /// 大步后退（-1.0）
     pub fn step_backward_phase(
         &mut self,
         world: &mut World,
@@ -224,18 +263,15 @@ impl GenerationPipeline {
             return Ok(false);
         }
 
-        // If we're at the beginning of a phase, go to the beginning of the previous one
         let target = if self.current_sub == 0 && self.current_phase > 0 {
-            // Go to start of previous phase
-            self.phases[..self.current_phase - 1]
+            self.algorithms[..self.current_phase - 1]
                 .iter()
-                .map(|p| p.sub_steps.len())
+                .map(|a| a.meta().steps.len())
                 .sum()
         } else {
-            // Go to start of current phase
-            self.phases[..self.current_phase]
+            self.algorithms[..self.current_phase]
                 .iter()
-                .map(|p| p.sub_steps.len())
+                .map(|a| a.meta().steps.len())
                 .sum()
         };
 
@@ -243,15 +279,15 @@ impl GenerationPipeline {
         Ok(true)
     }
 
-    /// Reset to step 0: clear the world to air.
+    /// 重置到第 0 步
     pub fn reset_all(&mut self, world: &mut World) {
         *world = World::new_air(world.width, world.height);
         self.current_phase = 0;
         self.current_sub = 0;
-        self.state = GenerationState::new();
+        self.biome_map = None;
     }
 
-    /// Run every remaining sub-step at once.
+    /// 从当前位置执行到底
     pub fn run_all(
         &mut self,
         world: &mut World,
@@ -264,23 +300,25 @@ impl GenerationPipeline {
         Ok(())
     }
 
-    // ── UI info ─────────────────────────────────────────────
+    // ── UI 信息 ─────────────────────────────────────────────
 
-    /// Build a list of phase info for the control panel.
+    /// 构建控制面板需要的阶段/步骤快照列表
     pub fn phase_info_list(&self) -> Vec<PhaseInfo> {
         let executed = self.executed_sub_steps();
         let mut flat = 0usize;
 
-        self.phases
+        self.algorithms
             .iter()
             .enumerate()
-            .map(|(_pi, phase)| {
+            .map(|(pi, algo)| {
+                let meta = algo.meta();
                 let phase_start = flat;
-                let sub_infos: Vec<SubStepInfo> = phase
-                    .sub_steps
+
+                let sub_infos: Vec<SubStepInfo> = meta
+                    .steps
                     .iter()
                     .enumerate()
-                    .map(|(_si, sub)| {
+                    .map(|(si, step_meta)| {
                         let status = if flat < executed {
                             StepStatus::Completed
                         } else if flat == executed {
@@ -290,12 +328,11 @@ impl GenerationPipeline {
                         };
                         flat += 1;
                         SubStepInfo {
-                            id: sub.meta.id.clone(),
-                            name: sub.meta.name.clone(),
-                            description: sub.meta.description.clone(),
-                            doc_url: sub.meta.doc_url.clone(),
+                            display_id: format!("{}.{}", pi + 1, si),
+                            name: step_meta.name.clone(),
+                            description: step_meta.description.clone(),
+                            doc_url: step_meta.doc_url.clone(),
                             status,
-                            has_config: sub.step.has_config(),
                         }
                     })
                     .collect();
@@ -310,9 +347,11 @@ impl GenerationPipeline {
                 };
 
                 PhaseInfo {
-                    phase_id: phase.phase_id,
-                    name: phase.name.clone(),
-                    description: phase.description.clone(),
+                    display_index: (pi + 1) as u32,
+                    algorithm_id: meta.id.clone(),
+                    name: meta.name.clone(),
+                    description: meta.description.clone(),
+                    has_params: !meta.params.is_empty(),
                     sub_steps: sub_infos,
                     status: phase_status,
                 }
@@ -320,28 +359,18 @@ impl GenerationPipeline {
             .collect()
     }
 
-    // ── internal ────────────────────────────────────────────
+    // ── 内部方法 ────────────────────────────────────────────
 
-    /// Convert flat index back to (phase, sub) position.
     fn flat_to_position(&self, flat: usize) -> (usize, usize) {
         let mut remaining = flat;
-        for (pi, phase) in self.phases.iter().enumerate() {
-            if remaining < phase.sub_steps.len() {
+        for (pi, algo) in self.algorithms.iter().enumerate() {
+            let count = algo.meta().steps.len();
+            if remaining < count {
                 return (pi, remaining);
             }
-            remaining -= phase.sub_steps.len();
+            remaining -= count;
         }
-        // Past the end
-        (self.phases.len(), 0)
-    }
-
-    /// Get the (phase, sub) position of the step before current.
-    fn prev_position(&self) -> Option<(usize, usize)> {
-        let executed = self.executed_sub_steps();
-        if executed == 0 {
-            return None;
-        }
-        Some(self.flat_to_position(executed - 1))
+        (self.algorithms.len(), 0)
     }
 
     fn replay_to_flat(
@@ -352,7 +381,7 @@ impl GenerationPipeline {
         blocks: &[BlockDefinition],
     ) -> Result<(), String> {
         *world = World::new_air(world.width, world.height);
-        self.state = GenerationState::new();
+        self.biome_map = None;
         self.current_phase = 0;
         self.current_sub = 0;
 
@@ -364,7 +393,7 @@ impl GenerationPipeline {
     }
 }
 
-/// Deterministic per-step seed derived from the master seed.
+/// 从主种子派生每步的确定性子种子
 fn derive_step_seed(master: u64, step_index: usize) -> u64 {
     master
         .wrapping_add(step_index as u64)
