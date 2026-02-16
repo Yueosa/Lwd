@@ -36,6 +36,7 @@ pub struct BiomeDivisionParams {
     pub jungle_width_ratio: f64,
     pub jungle_top_limit: f64,
     pub jungle_bottom_limit: f64,
+    pub jungle_center_offset_range: f64,
     
     // TODO: 其他步骤参数
 }
@@ -51,6 +52,7 @@ impl Default for BiomeDivisionParams {
             jungle_width_ratio: 0.16,
             jungle_top_limit: 0.10,
             jungle_bottom_limit: 0.85,
+            jungle_center_offset_range: 0.20,
         }
     }
 }
@@ -162,8 +164,8 @@ impl BiomeDivisionAlgorithm {
         let ocean_left_right = (w as f64 * self.params.ocean_left_width) as i32;
         let ocean_right_left = w - (w as f64 * self.params.ocean_right_width) as i32;
         
-        // 计算丛林可用空间和中心点
-        let (jungle_cx, _available_width) = if place_on_left {
+        // 计算丛林可用空间和基础中心点
+        let (jungle_cx_base, available_width) = if place_on_left {
             // 左侧：海洋右边界 → 森林左边界
             let left = ocean_left_right;
             let right = forest_left;
@@ -178,6 +180,11 @@ impl BiomeDivisionAlgorithm {
             let center = left + width / 2;
             (center, width)
         };
+        
+        // 添加随机偏移（在可用宽度的 ±offset_range 范围内）
+        let max_offset = (available_width as f64 * self.params.jungle_center_offset_range) as i32;
+        let offset = ctx.rng.gen_range(-max_offset..=max_offset);
+        let jungle_cx = jungle_cx_base + offset;
         
         // 丛林椭圆参数
         let jungle_rx = (w as f64 * self.params.jungle_width_ratio / 2.0) as i32;
@@ -353,6 +360,14 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     description: "丛林实际生成的底部限制（0.85=洞穴层底，1.0=地狱顶）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
                     default: serde_json::json!(0.85),
+                    group: Some("丛林生成".to_string()),
+                },
+                ParamDef {
+                    key: "jungle_center_offset_range".to_string(),
+                    name: "中心偏移范围".to_string(),
+                    description: "丛林中心点在可用空间内的随机偏移范围（0.0=无偏移，0.15=±15%）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 0.5 },
+                    default: serde_json::json!(0.20),
                     group: Some("丛林生成".to_string()),
                 },
             ],
