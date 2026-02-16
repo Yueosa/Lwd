@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::biome::{BiomeDefinition, BiomeId, BiomeMap, BIOME_UNASSIGNED};
+use crate::core::geometry::{self, Ellipse, Rect, Shape, ShapeCombine, Trapezoid};
 use crate::generation::algorithm::{
     ParamDef, ParamType, PhaseAlgorithm, PhaseMeta, RuntimeContext, StepMeta,
 };
@@ -142,28 +143,20 @@ impl BiomeDivisionAlgorithm {
         let hell_id = self.get_biome_id("hell")
             .ok_or("未找到 hell 环境定义")?;
         
-        let w = ctx.world.width;
-        let h = ctx.world.height;
+        let w = ctx.world.width as i32;
+        let h = ctx.world.height as i32;
         
         // 初始化 BiomeMap（全部填充为 UNASSIGNED）
-        *ctx.biome_map = Some(BiomeMap::new_filled(w, h, BIOME_UNASSIGNED));
+        *ctx.biome_map = Some(BiomeMap::new_filled(w as u32, h as u32, BIOME_UNASSIGNED));
         let bm = ctx.biome_map.as_mut().unwrap();
         
         // 太空层：0% ~ 10%
-        let space_bottom = (h as f64 * 0.10) as u32;
-        for y in 0..space_bottom {
-            for x in 0..w {
-                bm.set(x, y, space_id);
-            }
-        }
+        let space_bottom = (h as f64 * 0.10) as i32;
+        geometry::fill_biome(&Rect::new(0, 0, w, space_bottom), bm, space_id);
         
         // 地狱层：85% ~ 100%
-        let hell_top = (h as f64 * 0.85) as u32;
-        for y in hell_top..h {
-            for x in 0..w {
-                bm.set(x, y, hell_id);
-            }
-        }
+        let hell_top = (h as f64 * 0.85) as i32;
+        geometry::fill_biome(&Rect::new(0, hell_top, w, h), bm, hell_id);
         
         Ok(())
     }
@@ -174,20 +167,19 @@ impl BiomeDivisionAlgorithm {
             .ok_or("未找到 ocean 环境定义")?;
         
         let bm = ctx.biome_map.as_mut().ok_or("需先执行太空/地狱填充")?;
-        let w = bm.width;
-        let h = bm.height;
+        let w = bm.width as i32;
+        let h = bm.height as i32;
         
-        // 计算垂直范围（基于世界高度百分比）
-        let y_top = (h as f64 * self.params.ocean_top_limit) as u32;
-        let y_bottom = (h as f64 * self.params.ocean_bottom_limit) as u32;
+        let y_top = (h as f64 * self.params.ocean_top_limit) as i32;
+        let y_bottom = (h as f64 * self.params.ocean_bottom_limit) as i32;
         
         // 左侧海洋
-        let left_width = (w as f64 * self.params.ocean_left_width) as u32;
-        bm.fill_rect(0, y_top, left_width, y_bottom, ocean_id);
+        let left_width = (w as f64 * self.params.ocean_left_width) as i32;
+        geometry::fill_biome(&Rect::new(0, y_top, left_width, y_bottom), bm, ocean_id);
         
         // 右侧海洋
-        let right_width = (w as f64 * self.params.ocean_right_width) as u32;
-        bm.fill_rect(w - right_width, y_top, w, y_bottom, ocean_id);
+        let right_width = (w as f64 * self.params.ocean_right_width) as i32;
+        geometry::fill_biome(&Rect::new(w - right_width, y_top, w, y_bottom), bm, ocean_id);
         
         Ok(())
     }
@@ -198,27 +190,19 @@ impl BiomeDivisionAlgorithm {
             .ok_or("未找到 forest 环境定义")?;
         
         let bm = ctx.biome_map.as_mut().ok_or("需先执行海洋生成")?;
-        let w = bm.width;
-        let h = bm.height;
+        let w = bm.width as i32;
+        let h = bm.height as i32;
         
-        // 地表层 + 地下层范围：10% - 40%
-        let y_top = (h as f64 * 0.10) as u32;
-        let y_bottom = (h as f64 * 0.40) as u32;
-        
-        // 水平中心区域：从中心向两侧延伸
+        let y_top = (h as f64 * 0.10) as i32;
+        let y_bottom = (h as f64 * 0.40) as i32;
         let center_x = w / 2;
-        let half_width = (w as f64 * self.params.forest_width_ratio) as u32;
-        let x_left = center_x.saturating_sub(half_width);
-        let x_right = (center_x + half_width).min(w);
+        let half_width = (w as f64 * self.params.forest_width_ratio) as i32;
         
-        // 填充矩形森林区域（只替换空白区域）
-        for y in y_top..y_bottom {
-            for x in x_left..x_right {
-                if bm.get(x, y) == BIOME_UNASSIGNED {
-                    bm.set(x, y, forest_id);
-                }
-            }
-        }
+        let shape = Rect::new(
+            center_x - half_width, y_top,
+            center_x + half_width, y_bottom,
+        );
+        geometry::fill_biome_if(&shape, bm, forest_id, |c| c == BIOME_UNASSIGNED);
         
         Ok(())
     }
@@ -280,32 +264,14 @@ impl BiomeDivisionAlgorithm {
         let top_y = (h as f64 * self.params.jungle_top_limit) as i32;
         let bottom_y = (h as f64 * self.params.jungle_bottom_limit) as i32;
         
-        // 手动实现椭圆填充 + y范围裁剪
-        let x0 = (jungle_cx - jungle_rx).max(0);
-        let x1 = (jungle_cx + jungle_rx).min(w);
-        let y0 = (jungle_cy - jungle_ry).max(0);
-        let y1 = (jungle_cy + jungle_ry).min(h);
-        
-        for y in y0..y1 {
-            // y 范围裁剪
-            if y < top_y || y >= bottom_y {
-                continue;
-            }
-            
-            for x in x0..x1 {
-                let current_id = bm.get(x as u32, y as u32);
-                if current_id != BIOME_UNASSIGNED {
-                    continue;
-                }
-                
-                // 椭圆方程判定
-                let dx = (x - jungle_cx) as f64 / jungle_rx as f64;
-                let dy = (y - jungle_cy) as f64 / jungle_ry as f64;
-                if dx * dx + dy * dy <= 1.0 {
-                    bm.set(x as u32, y as u32, jungle_id);
-                }
-            }
-        }
+        // 丛林椭圆 + y范围裁剪（椭圆 ∩ 矩形）
+        let ell = Ellipse::new(
+            jungle_cx as f64, jungle_cy as f64,
+            jungle_rx as f64, jungle_ry as f64,
+        );
+        let clip = Rect::new(0, top_y, w, bottom_y);
+        let shape = ell.intersect(clip);
+        geometry::fill_biome_if(&shape, bm, jungle_id, |c| c == BIOME_UNASSIGNED);
         
         Ok(())
     }
@@ -364,34 +330,15 @@ impl BiomeDivisionAlgorithm {
         let top_y = (h as f64 * self.params.snow_top_limit) as i32;
         let bottom_y = (h as f64 * self.params.snow_bottom_limit * self.params.snow_bottom_depth_factor) as i32;
         
-        // 手动实现梯形填充 + 条件判断（只替换 BIOME_UNASSIGNED）
-        if top_y >= bottom_y {
-            return Ok(());
-        }
-        
-        let trap_h = (bottom_y - top_y) as f64;
-        for y in top_y..bottom_y.min(h) {
-            let t = (y - top_y) as f64 / trap_h;
-            
-            // 线性插值计算当前 y 的左右边界
-            let top_left = (snow_cx - top_half_width) as f64;
-            let top_right = (snow_cx + top_half_width) as f64;
-            let bottom_left = (snow_cx - bottom_half_width) as f64;
-            let bottom_right = (snow_cx + bottom_half_width) as f64;
-            
-            let left = top_left + (bottom_left - top_left) * t;
-            let right = top_right + (bottom_right - top_right) * t;
-            
-            let xl = (left.floor().max(0.0)) as i32;
-            let xr = (right.ceil().min(w as f64)) as i32;
-            
-            for x in xl..xr {
-                let current_id = bm.get(x as u32, y as u32);
-                if current_id == BIOME_UNASSIGNED {
-                    bm.set(x as u32, y as u32, snow_id);
-                }
-            }
-        }
+        // 梯形填充（只替换 BIOME_UNASSIGNED）
+        let shape = Trapezoid::new(
+            top_y, bottom_y.min(h),
+            (snow_cx - top_half_width) as f64,
+            (snow_cx + top_half_width) as f64,
+            (snow_cx - bottom_half_width) as f64,
+            (snow_cx + bottom_half_width) as f64,
+        );
+        geometry::fill_biome_if(&shape, bm, snow_id, |c| c == BIOME_UNASSIGNED);
         
         Ok(())
     }
@@ -451,47 +398,23 @@ impl BiomeDivisionAlgorithm {
             }
         }
         
-        // 辅助：验证矩形区域全空白（采样步长 2）
+        // 辅助：验证矩形区域全空白（采样步长 2）—— 使用 geometry API
         let rect_all_empty = |bm: &BiomeMap, xl: i32, xr: i32, yt: i32, yb: i32| -> bool {
-            let step = 2;
-            let mut y = yt;
-            while y < yb {
-                let mut x = xl;
-                while x < xr {
-                    if bm.get(x as u32, y as u32) != BIOME_UNASSIGNED {
-                        return false;
-                    }
-                    x += step;
-                }
-                y += step;
-            }
-            true
+            geometry::shape_all_match(
+                &Rect::new(xl, yt, xr, yb),
+                bm, 2,
+                |c| c == BIOME_UNASSIGNED,
+            )
         };
         
-        // 辅助：验证椭圆区域（从 true_top 到 true_bottom）全空白
+        // 辅助：验证椭圆区域（从 true_top 到 true_bottom）全空白 —— 使用 geometry API
         let ellipse_all_empty = |bm: &BiomeMap, cx: i32, rx: f64| -> bool {
             if ell_ry <= 0.0 { return true; }
-            let x0 = ((cx as f64 - rx).floor().max(0.0)) as i32;
-            let x1 = ((cx as f64 + rx).ceil().min(w as f64)) as i32;
-            let y0 = (true_top.floor().max(0.0)) as i32;
-            let y1 = (true_bottom.ceil().min(h as f64)) as i32;
-            let step = 2;
-            let mut sy = y0;
-            while sy < y1 {
-                let mut sx = x0;
-                while sx < x1 {
-                    let dxe = (sx - cx) as f64 / rx;
-                    let dye = (sy as f64 - ell_cy) / ell_ry;
-                    if dxe * dxe + dye * dye <= 1.0 {
-                        if bm.get(sx as u32, sy as u32) != BIOME_UNASSIGNED {
-                            return false;
-                        }
-                    }
-                    sx += step;
-                }
-                sy += step;
-            }
-            true
+            geometry::shape_all_match(
+                &Ellipse::new(cx as f64, ell_cy, rx, ell_ry),
+                bm, 2,
+                |c| c == BIOME_UNASSIGNED,
+            )
         };
         
         // 辅助：计算椭圆 rx
@@ -656,35 +579,16 @@ impl BiomeDivisionAlgorithm {
             let xl = (slot.center_x - half_width).max(0);
             let xr = (slot.center_x + half_width).min(w);
             
-            // 绘制地表沙漠矩形
-            for y in surface_top_y..surface_bottom_y.min(h) {
-                for x in xl..xr {
-                    if bm.get(x as u32, y as u32) == BIOME_UNASSIGNED {
-                        bm.set(x as u32, y as u32, desert_surface_id);
-                    }
-                }
-            }
+            // 绘制地表沙漠矩形 —— geometry API
+            let surface_rect = Rect::new(xl, surface_top_y, xr, surface_bottom_y.min(h));
+            geometry::fill_biome_if(&surface_rect, bm, desert_surface_id, |c| c == BIOME_UNASSIGNED);
             
-            // 绘制真沙漠完整椭圆（覆写其内部的地表沙漠）
+            // 绘制真沙漠完整椭圆（覆写其内部的地表沙漠）—— geometry API
             if slot.has_true {
-                let rx = slot.rx;
-                let x0 = ((slot.center_x as f64 - rx).floor().max(0.0)) as i32;
-                let x1 = ((slot.center_x as f64 + rx).ceil().min(w as f64)) as i32;
-                let y0 = (true_top.floor().max(0.0)) as i32;
-                let y1 = (true_bottom.ceil().min(h as f64)) as i32;
-                
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        let cid = bm.get(x as u32, y as u32);
-                        if cid == BIOME_UNASSIGNED || cid == desert_surface_id {
-                            let dxe = (x - slot.center_x) as f64 / rx;
-                            let dye = (y as f64 - ell_cy) / ell_ry;
-                            if dxe * dxe + dye * dye <= 1.0 {
-                                bm.set(x as u32, y as u32, desert_true_id);
-                            }
-                        }
-                    }
-                }
+                let ell = Ellipse::new(slot.center_x as f64, ell_cy, slot.rx, ell_ry);
+                geometry::fill_biome_if(&ell, bm, desert_true_id, |c| {
+                    c == BIOME_UNASSIGNED || c == desert_surface_id
+                });
                 true_slot_data.push((slot.center_x, slot.width));
             }
             
@@ -736,21 +640,13 @@ impl BiomeDivisionAlgorithm {
             }
         }
         
-        // 辅助：验证矩形区域全空白（采样步长 2）
+        // 辅助：验证矩形区域全空白（采样步长 2）—— 使用 geometry API
         let rect_all_empty = |bm: &BiomeMap, xl: i32, xr: i32, yt: i32, yb: i32| -> bool {
-            let step = 2;
-            let mut y = yt;
-            while y < yb {
-                let mut x = xl;
-                while x < xr {
-                    if bm.get(x as u32, y as u32) != BIOME_UNASSIGNED {
-                        return false;
-                    }
-                    x += step;
-                }
-                y += step;
-            }
-            true
+            geometry::shape_all_match(
+                &Rect::new(xl, yt, xr, yb),
+                bm, 2,
+                |c| c == BIOME_UNASSIGNED,
+            )
         };
         
         // 槽位记录
@@ -811,19 +707,14 @@ impl BiomeDivisionAlgorithm {
             placed += 1;
         }
         
-        // 一次性绘制
+        // 一次性绘制 —— geometry API
         for slot in &slots {
             let half_width = slot.width / 2;
             let xl = (slot.center_x - half_width).max(0);
             let xr = (slot.center_x + half_width).min(w);
             
-            for y in surface_top_y..surface_bottom_y.min(h) {
-                for x in xl..xr {
-                    if bm.get(x as u32, y as u32) == BIOME_UNASSIGNED {
-                        bm.set(x as u32, y as u32, crimson_id);
-                    }
-                }
-            }
+            let rect = Rect::new(xl, surface_top_y, xr, surface_bottom_y.min(h));
+            geometry::fill_biome_if(&rect, bm, crimson_id, |c| c == BIOME_UNASSIGNED);
         }
         
         Ok(())
@@ -971,14 +862,9 @@ impl BiomeDivisionAlgorithm {
             }
         }
         
-        // ── 阶段 3：剩余空白填充为森林（仅地表+地下层）───
-        for y in layer_top..layer_bottom {
-            for x in 0..w {
-                if bm.get(x as u32, y as u32) == BIOME_UNASSIGNED {
-                    bm.set(x as u32, y as u32, forest_id);
-                }
-            }
-        }
+        // ── 阶段 3：剩余空白填充为森林（仅地表+地下层）—— geometry API
+        let fill_rect = Rect::new(0, layer_top, w, layer_bottom);
+        geometry::fill_biome_if(&fill_rect, bm, forest_id, |c| c == BIOME_UNASSIGNED);
         
         Ok(())
     }
@@ -991,16 +877,11 @@ impl BiomeDivisionAlgorithm {
             .ok_or("未找到 stone 环境定义")?;
         
         let bm = ctx.biome_map.as_mut().ok_or("需先执行前置步骤")?;
-        let w = bm.width;
-        let h = bm.height;
+        let w = bm.width as i32;
+        let h = bm.height as i32;
         
-        for y in 0..h {
-            for x in 0..w {
-                if bm.get(x, y) == BIOME_UNASSIGNED {
-                    bm.set(x, y, stone_id);
-                }
-            }
-        }
+        let world_rect = Rect::new(0, 0, w, h);
+        geometry::fill_biome_if(&world_rect, bm, stone_id, |c| c == BIOME_UNASSIGNED);
         
         Ok(())
     }
