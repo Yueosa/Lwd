@@ -40,5 +40,17 @@
     "name": "真沙漠",
     "overlay_color": [180, 140, 50, 80],
     "description": "地下深层沙漠环境"
+  },
+  "8": {
+    "key": "space",
+    "name": "太空",
+    "overlay_color": [20, 10, 40, 80],
+    "description": "世界顶部的太空层"
+  },
+  "9": {
+    "key": "hell",
+    "name": "地狱",
+    "overlay_color": [180, 50, 30, 80],
+    "description": "世界底部的地狱层"
   }
 }
