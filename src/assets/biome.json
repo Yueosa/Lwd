@@ -14,7 +14,7 @@
   "3": {
     "key": "desert",
     "name": "沙漠",
-    "overlay_color": [220, 180, 80, 80],
+    "overlay_color": [230, 200, 100, 80],
     "description": "干燥的沙漠环境，黄沙遍布"
   },
   "4": {
@@ -26,7 +26,7 @@
   "5": {
     "key": "jungle",
     "name": "丛林",
-    "overlay_color": [40, 120, 40, 80],
+    "overlay_color": [20, 80, 50, 80],
     "description": "茂密的热带丛林环境"
   },
   "6": {
@@ -38,7 +38,7 @@
   "7": {
     "key": "desert_true",
     "name": "真沙漠",
-    "overlay_color": [180, 140, 50, 80],
+    "overlay_color": [160, 100, 30, 80],
     "description": "地下深层沙漠环境"
   },
   "8": {
@@ -52,5 +52,11 @@
     "name": "地狱",
     "overlay_color": [180, 50, 30, 80],
     "description": "世界底部的地狱层"
+  },
+  "10": {
+    "key": "stone",
+    "name": "地块",
+    "overlay_color": [90, 85, 80, 80],
+    "description": "岩石地块，填充洞穴层等未分配区域"
   }
 }
