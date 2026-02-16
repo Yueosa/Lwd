@@ -351,6 +351,15 @@ impl BiomeDivisionAlgorithm {
     }
 
     /// 4. 沙漠生成 — 在世界空白区域随机生成沙漠地表和真沙漠
+    ///
+    /// 核心原则：所有环境互相避让，绝不重叠。
+    ///
+    /// 算法流程（先放真沙漠，再放普通地表）：
+    ///   阶段 1：预计算 + 扫描空白区域
+    ///   阶段 2：优先放置真沙漠（地表矩形 + 地下椭圆必须全空白）
+    ///           从世界中心向两侧扫描，找到第一个满足条件的位置
+    ///   阶段 3：放置剩余的普通地表沙漠（随机位置，避开已有沙漠）
+    ///   阶段 4：一次性绘制所有沙漠
     fn step_desert(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
         let desert_surface_id = self.get_biome_id("desert")
             .ok_or("未找到 desert 环境定义")?;
@@ -363,233 +372,281 @@ impl BiomeDivisionAlgorithm {
         
         use rand::Rng;
         
-        // === 第一阶段：扫描空白区域 ===
+        // ── 阶段 1：预计算常量 ─────────────────────────────
+        let surface_top_y = (h as f64 * self.params.desert_surface_top_limit) as i32;
+        let surface_bottom_y = (h as f64 * self.params.desert_surface_bottom_limit) as i32;
+        let world_center_x = w / 2;
         
-        // 在地表层中间高度扫描，找出所有连续的 UNASSIGNED 区段
-        let scan_y = (h as f64 * (self.params.desert_surface_top_limit + self.params.desert_surface_bottom_limit) / 2.0) as u32;
-        let mut empty_ranges: Vec<(i32, i32)> = Vec::new(); // (start_x, end_x)
-        let mut range_start: Option<i32> = None;
+        // 真沙漠椭圆数学参数
+        let true_top = h as f64 * self.params.desert_true_top_limit;
+        let true_bottom = h as f64 * self.params.desert_true_bottom_limit
+            * self.params.desert_true_depth_factor;
+        let ell_cy = (true_top + true_bottom) / 2.0;
+        let ell_ry = (true_bottom - true_top) / 2.0;
+        let junction_y = h as f64 * self.params.desert_surface_bottom_limit;
         
-        for x in 0..w {
-            if bm.get(x as u32, scan_y) == BIOME_UNASSIGNED {
-                if range_start.is_none() {
-                    range_start = Some(x);
-                }
-            } else if let Some(start) = range_start {
-                empty_ranges.push((start, x));
-                range_start = None;
-            }
-        }
-        if let Some(start) = range_start {
-            empty_ranges.push((start, w));
-        }
-        
-        // === 第二阶段：在空白区域中随机放置沙漠地表（矩形） ===
-        
-        let surface_count = self.params.desert_surface_count;
-        let mut desert_positions: Vec<(i32, i32)> = Vec::new(); // (x_center, width)
-        
-        let mut attempts = 0;
-        while desert_positions.len() < surface_count as usize && attempts < surface_count * 20 {
-            attempts += 1;
-            
-            // 随机生成宽度
-            let width_ratio = ctx.rng.gen_range(self.params.desert_surface_width_min..=self.params.desert_surface_width_max);
-            let width = (w as f64 * width_ratio) as i32;
-            let half_width = width / 2;
-            
-            // 从空白区段中随机选一个足够宽的区段
-            let valid_ranges: Vec<_> = empty_ranges.iter()
-                .filter(|&&(s, e)| e - s >= width)
-                .collect();
-            
-            if valid_ranges.is_empty() {
-                break;
-            }
-            
-            let range_idx = ctx.rng.gen_range(0..valid_ranges.len());
-            let &(range_start, range_end) = valid_ranges[range_idx];
-            
-            // 在区段内随机选择中心点
-            let min_cx = range_start + half_width;
-            let max_cx = range_end - half_width;
-            if min_cx >= max_cx {
-                continue;
-            }
-            let center_x = ctx.rng.gen_range(min_cx..max_cx);
-            
-            // 检查与已有沙漠的间距
-            let min_spacing = (w as f64 * self.params.desert_surface_min_spacing) as i32;
-            let mut valid = true;
-            for &(existing_x, existing_w) in &desert_positions {
-                let distance = (center_x - existing_x).abs();
-                let required_spacing = (width + existing_w) / 2 + min_spacing;
-                if distance < required_spacing {
-                    valid = false;
-                    break;
+        // 扫描地表层中间高度的空白区段
+        let scan_y = ((surface_top_y + surface_bottom_y) / 2) as u32;
+        let mut empty_ranges: Vec<(i32, i32)> = Vec::new();
+        {
+            let mut range_start: Option<i32> = None;
+            for x in 0..w {
+                if bm.get(x as u32, scan_y) == BIOME_UNASSIGNED {
+                    if range_start.is_none() {
+                        range_start = Some(x);
+                    }
+                } else if let Some(start) = range_start {
+                    empty_ranges.push((start, x));
+                    range_start = None;
                 }
             }
+            if let Some(start) = range_start {
+                empty_ranges.push((start, w));
+            }
+        }
+        
+        // ── 辅助：验证矩形区域全空白（采样步长 2，更精确）──
+        let rect_all_empty = |bm: &BiomeMap, xl: i32, xr: i32, yt: i32, yb: i32| -> bool {
+            let step = 2;
+            let mut y = yt;
+            while y < yb {
+                let mut x = xl;
+                while x < xr {
+                    if bm.get(x as u32, y as u32) != BIOME_UNASSIGNED {
+                        return false;
+                    }
+                    x += step;
+                }
+                y += step;
+            }
+            true
+        };
+        
+        // ── 辅助：验证椭圆区域（从 true_top 到 true_bottom）全空白 ──
+        let ellipse_all_empty = |bm: &BiomeMap, cx: i32, rx: f64| -> bool {
+            if ell_ry <= 0.0 { return true; }
+            let x0 = ((cx as f64 - rx).floor().max(0.0)) as i32;
+            let x1 = ((cx as f64 + rx).ceil().min(w as f64)) as i32;
+            let y0 = (true_top.floor().max(0.0)) as i32;
+            let y1 = (true_bottom.ceil().min(h as f64)) as i32;
+            let step = 2;
+            let mut sy = y0;
+            while sy < y1 {
+                let mut sx = x0;
+                while sx < x1 {
+                    let dxe = (sx - cx) as f64 / rx;
+                    let dye = (sy as f64 - ell_cy) / ell_ry;
+                    if dxe * dxe + dye * dye <= 1.0 {
+                        if bm.get(sx as u32, sy as u32) != BIOME_UNASSIGNED {
+                            return false;
+                        }
+                    }
+                    sx += step;
+                }
+                sy += step;
+            }
+            true
+        };
+        
+        // ── 辅助：计算椭圆 rx ──────────────────────────────
+        let compute_rx = |surface_half_width: f64| -> Option<f64> {
+            if ell_ry <= 0.0 { return None; }
+            let dy = (junction_y - ell_cy) / ell_ry;
+            let dy_sq = dy * dy;
+            if dy_sq >= 1.0 { return None; }
+            Some(surface_half_width / (1.0 - dy_sq).sqrt())
+        };
+        
+        // ── 沙漠槽位数据结构 ───────────────────────────────
+        struct DesertSlot {
+            center_x: i32,
+            width: i32,
+            has_true: bool,
+            rx: f64,
+        }
+        let mut slots: Vec<DesertSlot> = Vec::new();
+        
+        let surface_count = self.params.desert_surface_count as usize;
+        let true_count = self.params.desert_true_count as usize;
+        let min_spacing = (w as f64 * self.params.desert_surface_min_spacing) as i32;
+        
+        // ── 辅助：检查与已有沙漠的间距 ─────────────────────
+        let spacing_ok = |slots: &[DesertSlot], cx: i32, width: i32, min_sp: i32| -> bool {
+            for slot in slots {
+                let dist = (cx - slot.center_x).abs();
+                let required = (width + slot.width) / 2 + min_sp;
+                if dist < required {
+                    return false;
+                }
+            }
+            true
+        };
+        
+        // ── 阶段 2：优先放置真沙漠 ────────────────────────
+        //
+        // 策略：从世界中心向两侧交替扫描空白区段，
+        // 对每个区段尝试在其中心放置，同时验证地表矩形 + 地下椭圆全空白。
+        // 这保证真沙漠总是拿到离中心最近的有效位置。
+        
+        if true_count > 0 && ell_ry > 0.0 {
+            // 将空白区段按其中心离世界中心的距离排序
+            let mut ranges_by_center: Vec<(i32, i32)> = empty_ranges.clone();
+            ranges_by_center.sort_by_key(|&(s, e)| {
+                let mid = (s + e) / 2;
+                (mid - world_center_x).abs()
+            });
             
-            // 验证宽度范围内全部为 UNASSIGNED
-            if valid {
-                let x_left = (center_x - half_width).max(0);
-                let x_right = (center_x + half_width).min(w);
-                for x in x_left..x_right {
-                    if bm.get(x as u32, scan_y) != BIOME_UNASSIGNED {
-                        valid = false;
-                        break;
+            let mut true_placed = 0;
+            
+            for &(range_start, range_end) in &ranges_by_center {
+                if true_placed >= true_count { break; }
+                
+                // 在此区段内，从离中心最近的位置开始尝试
+                let avg_width_ratio = (self.params.desert_surface_width_min
+                    + self.params.desert_surface_width_max) / 2.0;
+                let width = (w as f64 * avg_width_ratio) as i32;
+                let half_width = width / 2;
+                
+                if range_end - range_start < width { continue; }
+                
+                let min_cx = range_start + half_width;
+                let max_cx = range_end - half_width;
+                if min_cx >= max_cx { continue; }
+                
+                // 在区段内按离中心距离升序尝试多个位置
+                // 生成候选位置列表：中心 → 左 → 右 → 更左 → 更右...
+                let range_mid = (min_cx + max_cx) / 2;
+                let closest_to_center = world_center_x.clamp(min_cx, max_cx);
+                let scan_step = (width / 2).max(4); // 扫描步长
+                
+                let mut try_positions: Vec<i32> = Vec::new();
+                try_positions.push(closest_to_center);
+                let mut offset = scan_step;
+                while closest_to_center - offset >= min_cx
+                    || closest_to_center + offset <= max_cx
+                {
+                    if closest_to_center - offset >= min_cx {
+                        try_positions.push(closest_to_center - offset);
+                    }
+                    if closest_to_center + offset <= max_cx {
+                        try_positions.push(closest_to_center + offset);
+                    }
+                    offset += scan_step;
+                }
+                
+                for cx in try_positions {
+                    if true_placed >= true_count { break; }
+                    
+                    // 检查间距
+                    if !spacing_ok(&slots, cx, width, min_spacing) { continue; }
+                    
+                    // 验证地表矩形全空白
+                    let xl = (cx - half_width).max(0);
+                    let xr = (cx + half_width).min(w);
+                    if !rect_all_empty(bm, xl, xr, surface_top_y, surface_bottom_y.min(h)) {
+                        continue;
+                    }
+                    
+                    // 计算 rx 并验证椭圆区域全空白
+                    let surface_half_width = width as f64 / 2.0;
+                    if let Some(rx) = compute_rx(surface_half_width) {
+                        if ellipse_all_empty(bm, cx, rx) {
+                            slots.push(DesertSlot {
+                                center_x: cx,
+                                width,
+                                has_true: true,
+                                rx,
+                            });
+                            true_placed += 1;
+                        }
                     }
                 }
             }
-            
-            if valid {
-                desert_positions.push((center_x, width));
-            }
         }
         
-        // 绘制沙漠地表矩形
-        let surface_top_y = (h as f64 * self.params.desert_surface_top_limit) as i32;
-        let surface_bottom_y = (h as f64 * self.params.desert_surface_bottom_limit) as i32;
+        // ── 阶段 3：放置剩余普通地表沙漠 ──────────────────
         
-        for &(center_x, width) in &desert_positions {
-            let half_width = width / 2;
-            let x_left = (center_x - half_width).max(0);
-            let x_right = (center_x + half_width).min(w);
+        let remaining = surface_count.saturating_sub(slots.len());
+        let mut attempts = 0u32;
+        let max_attempts = (remaining as u32 + 1) * 30;
+        let mut surface_placed = 0;
+        
+        while surface_placed < remaining && attempts < max_attempts {
+            attempts += 1;
             
+            let width_ratio = ctx.rng.gen_range(
+                self.params.desert_surface_width_min..=self.params.desert_surface_width_max
+            );
+            let width = (w as f64 * width_ratio) as i32;
+            let half_width = width / 2;
+            
+            let valid_ranges: Vec<_> = empty_ranges.iter()
+                .filter(|&&(s, e)| e - s >= width)
+                .collect();
+            if valid_ranges.is_empty() { break; }
+            
+            let range_idx = ctx.rng.gen_range(0..valid_ranges.len());
+            let &(rs, re) = valid_ranges[range_idx];
+            
+            let min_cx = rs + half_width;
+            let max_cx = re - half_width;
+            if min_cx >= max_cx { continue; }
+            let cx = ctx.rng.gen_range(min_cx..max_cx);
+            
+            if !spacing_ok(&slots, cx, width, min_spacing) { continue; }
+            
+            let xl = (cx - half_width).max(0);
+            let xr = (cx + half_width).min(w);
+            if !rect_all_empty(bm, xl, xr, surface_top_y, surface_bottom_y.min(h)) {
+                continue;
+            }
+            
+            slots.push(DesertSlot {
+                center_x: cx,
+                width,
+                has_true: false,
+                rx: 0.0,
+            });
+            surface_placed += 1;
+        }
+        
+        // ── 阶段 4：一次性绘制 ─────────────────────────────
+        
+        for slot in &slots {
+            let half_width = slot.width / 2;
+            let xl = (slot.center_x - half_width).max(0);
+            let xr = (slot.center_x + half_width).min(w);
+            
+            // 绘制地表沙漠矩形
             for y in surface_top_y..surface_bottom_y.min(h) {
-                for x in x_left..x_right {
+                for x in xl..xr {
                     if bm.get(x as u32, y as u32) == BIOME_UNASSIGNED {
                         bm.set(x as u32, y as u32, desert_surface_id);
                     }
                 }
             }
-        }
-        
-        // === 第三阶段：生成真沙漠（互相避让，只画在分界线以下） ===
-        //
-        // 核心原则：
-        //   1. 真沙漠只画在分界线（地表沙漠底部）以下，不吞噬地表沙漠
-        //   2. 严格只在 UNASSIGNED 格子上绘制，与所有环境互相避让
-        //   3. 选位优先离世界中心最近，但跳过地下可用空间不足的候选
-        
-        if desert_positions.is_empty() {
-            return Ok(());
-        }
-        
-        let true_count = (self.params.desert_true_count as usize).min(desert_positions.len());
-        if true_count == 0 {
-            return Ok(());
-        }
-        
-        // 分界线（地表沙漠底部）— 真沙漠只画在此线以下
-        let junction_y = h as f64 * self.params.desert_surface_bottom_limit;
-        let junction_y_int = junction_y.ceil() as i32;
-        
-        // 椭圆的垂直范围（整个椭圆的数学定义，用于计算 rx）
-        let true_top = h as f64 * self.params.desert_true_top_limit;
-        let true_bottom = h as f64 * self.params.desert_true_bottom_limit * self.params.desert_true_depth_factor;
-        let cy = (true_top + true_bottom) / 2.0;
-        let ry = (true_bottom - true_top) / 2.0;
-        
-        if ry <= 0.0 {
-            return Ok(());
-        }
-        
-        let world_center_x = w / 2;
-        
-        // 对每个候选地表沙漠，计算 rx 和地下区域可用空间
-        struct TrueDesertCandidate {
-            center_x: i32,
-            rx: f64,
-            score: usize,       // 分界线以下椭圆内可用格子数
-            total: usize,       // 分界线以下椭圆内总格子数
-            dist_to_center: i32,
-        }
-        let mut candidates: Vec<TrueDesertCandidate> = Vec::new();
-        
-        for &(center_x, surface_width) in &desert_positions {
-            let surface_half_width = surface_width as f64 / 2.0;
             
-            // 在分界线处，椭圆宽度 = 地表沙漠宽度 → 反推 rx
-            let dy = (junction_y - cy) / ry;
-            let dy_sq = dy * dy;
-            if dy_sq >= 1.0 {
-                continue;
-            }
-            let rx = surface_half_width / (1.0 - dy_sq).sqrt();
-            
-            // 只采样分界线以下的椭圆区域（这才是真沙漠实际绘制区域）
-            let x0 = ((center_x as f64 - rx).floor().max(0.0)) as i32;
-            let x1 = ((center_x as f64 + rx).ceil().min(w as f64)) as i32;
-            let y0 = junction_y_int;
-            let y1 = (true_bottom.ceil().min(h as f64)) as i32;
-            
-            let sample_step = 4;
-            let mut score: usize = 0;
-            let mut total: usize = 0;
-            
-            let mut sy = y0;
-            while sy < y1 {
-                let mut sx = x0;
-                while sx < x1 {
-                    let dxe = (sx - center_x) as f64 / rx;
-                    let dye = (sy as f64 - cy) / ry;
-                    if dxe * dxe + dye * dye <= 1.0 {
-                        total += 1;
-                        let cid = bm.get(sx as u32, sy as u32);
-                        if cid == BIOME_UNASSIGNED {
-                            score += 1;
-                        }
-                    }
-                    sx += sample_step;
-                }
-                sy += sample_step;
-            }
-            
-            candidates.push(TrueDesertCandidate {
-                center_x,
-                rx,
-                score,
-                total,
-                dist_to_center: (center_x - world_center_x).abs(),
-            });
-        }
-        
-        // 按距离世界中心升序排列（优先选最近的）
-        candidates.sort_by_key(|c| c.dist_to_center);
-        
-        // 跳过可用空间不足 30% 的候选
-        let min_fill_ratio = 0.30;
-        
-        let mut placed = 0;
-        for cand in &candidates {
-            if placed >= true_count {
-                break;
-            }
-            
-            if cand.total > 0 && (cand.score as f64 / cand.total as f64) < min_fill_ratio {
-                continue;
-            }
-            
-            // 绘制椭圆——只画分界线以下，严格只填 UNASSIGNED
-            let x0 = ((cand.center_x as f64 - cand.rx).floor().max(0.0)) as i32;
-            let x1 = ((cand.center_x as f64 + cand.rx).ceil().min(w as f64)) as i32;
-            let y0 = junction_y_int;  // 从分界线开始，不碰地表沙漠
-            let y1 = (true_bottom.ceil().min(h as f64)) as i32;
-            
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    if bm.get(x as u32, y as u32) == BIOME_UNASSIGNED {
-                        let dxe = (x - cand.center_x) as f64 / cand.rx;
-                        let dye = (y as f64 - cy) / ry;
-                        if dxe * dxe + dye * dye <= 1.0 {
-                            bm.set(x as u32, y as u32, desert_true_id);
+            // 绘制真沙漠完整椭圆（覆写其内部的地表沙漠）
+            if slot.has_true {
+                let rx = slot.rx;
+                let x0 = ((slot.center_x as f64 - rx).floor().max(0.0)) as i32;
+                let x1 = ((slot.center_x as f64 + rx).ceil().min(w as f64)) as i32;
+                let y0 = (true_top.floor().max(0.0)) as i32;
+                let y1 = (true_bottom.ceil().min(h as f64)) as i32;
+                
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let cid = bm.get(x as u32, y as u32);
+                        if cid == BIOME_UNASSIGNED || cid == desert_surface_id {
+                            let dxe = (x - slot.center_x) as f64 / rx;
+                            let dye = (y as f64 - ell_cy) / ell_ry;
+                            if dxe * dxe + dye * dye <= 1.0 {
+                                bm.set(x as u32, y as u32, desert_true_id);
+                            }
                         }
                     }
                 }
             }
-            
-            placed += 1;
         }
         
         Ok(())
