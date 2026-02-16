@@ -46,15 +46,11 @@
 
 每次世界数据变更后需重建整个 `ColorImage`（大世界 8400×2400 = ~80MB RGBA）。
 
-> **部分缓解**：增量执行（`running_to_end`）期间，通过 `inc_frame_counter` 每 5 帧才刷新一次纹理，大幅减少 GPU 上传频率。但单次刷新仍为全帧重建。
+> **部分缓解**：增量执行期间，通过 `inc_frame_counter` 每 5 帧才刷新一次纹理，大幅减少 GPU 上传频率。但单次刷新仍为全帧重建。
 
 **优化方向**：
 - 脏区域追踪：只重建变更的矩形区域
 - GPU 纹理更新：直接修改纹理子区域而非整帧替换
-
-### ~~phase_info_list 每帧分配~~ ✅ 已解决
-
-`phase_info_list()` 现已通过 `cached_phase_info` + dirty flag 实现缓存，仅在步骤变化时重建。方法签名变为 `&mut self -> &[PhaseInfo]`。`total_sub_steps()` 和 `executed_sub_steps()` 通过 `step_counts` / `total_steps_cache` 实现 O(1) 查询。
 
 ### 增量执行帧预算
 
@@ -64,20 +60,42 @@
 - 测量每帧剩余时间，动态调整步数
 - 帧预算目标 ≤ 16ms（60 FPS）
 
+## 已解决的问题
+
+### ~~phase_info_list 每帧分配~~ ✅
+
+`phase_info_list()` 现已通过 `cached_phase_info` + dirty flag 实现缓存，仅在步骤变化时重建。`total_sub_steps()` 和 `executed_sub_steps()` 通过 `step_counts` / `total_steps_cache` 实现 O(1) 查询。
+
+### ~~符号渲染为方块~~ ✅
+
+通过引入 NotoSansSymbols2 子集字体（3.5KB）解决 Unicode 几何符号渲染问题。字体加载顺序：egui 默认字体 → 符号字体 → CJK 字体。
+
+### ~~二进制体积过大~~ ✅
+
+通过字体子集化（19MB → 10MB CJK + 3.5KB 符号）+ release 优化（opt-level="z", LTO, strip）+ UPX 压缩，二进制从 ~28MB 降至 ~7.9MB。
+
+### ~~FPS 空闲抖动~~ ✅
+
+通过 `request_repaint_after(Duration::from_millis(16))` 限制空闲帧率为 60FPS。
+
+### ~~WM_CLASS 缺失~~ ✅
+
+通过 `.with_app_id("lian-world")` 设置 Wayland WM_CLASS。
+
 ## 测试
 
 当前无自动化测试。
 
 **规划方向**：
 - 单元测试：World 安全 API、确定性 RNG 派生、快照序列化
-- 集成测试：Pipeline 完整重放一致性（seed A → 运行到底 = seed A → 步进到底 = seed A → 回退再前进到底）
+- 集成测试：Pipeline 完整重放一致性
 - 模糊测试：随机种子大规模生成不 panic
 
 ## 工程改进
 
 ### 警告清理
 
-编译存在 ~18 个 warning（未使用的 import/field），应逐步清理。
+编译存在 ~19 个 warning（未使用的 import/field/constant），大部分为预留的未来接口，不影响运行。
 
 ### CI/CD
 
