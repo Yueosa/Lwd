@@ -54,7 +54,7 @@ fn draw_biome_labels(
 ) {
     use std::collections::HashMap;
 
-    // 对每种 biome 收集所有采样点 (x, y)
+    // 对每种 biome 收集所有采样点 (x, y)，跳过 UNASSIGNED
     let mut sample_map: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
 
     let step = 8u32;
@@ -65,14 +65,18 @@ fn draw_biome_labels(
         let mut x = 0;
         while x < w {
             let bid = biome_map.get(x, y);
-            sample_map.entry(bid).or_default().push((x, y));
+            if bid != 0 {
+                sample_map.entry(bid).or_default().push((x, y));
+            }
             x += step;
         }
         y += step;
     }
 
-    // 间隔阈值：如果连续采样列之间的间距超过此值，视为两个独立区域
-    let gap_threshold = w / 5;
+    // 间隔阈值：如果连续采样点之间 x 间距超过此值，视为两个独立区域
+    // 使用采样步长的 3 倍 (24px)。旧值 w/5 (20%世界宽度) 会将
+    // 相距 15% 的小环境（如沙漠）错误合并成一个区域，导致标签错位
+    let gap_threshold = step * 3;
 
     // 第一阶段：收集所有候选标签 (pos, text, region_size)
     struct LabelCandidate {
