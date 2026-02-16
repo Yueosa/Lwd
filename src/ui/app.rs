@@ -21,8 +21,8 @@ use crate::ui::splash::show_splash;
 use crate::ui::status_bar::show_status_bar;
 use crate::ui::theme;
 
-const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansSC-Subset.ttf");
-const SYMBOLS_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/Symbols-Subset.ttf");
+const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansCJKsc-Regular.otf");
+const SYMBOLS_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansSymbols2-Regular.ttf");
 
 /// 获取 runtime.json 的可靠路径（可执行文件同级目录下）
 pub fn runtime_json_path() -> std::path::PathBuf {
