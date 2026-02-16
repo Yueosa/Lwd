@@ -38,21 +38,59 @@ pub struct BiomeDivisionParams {
     pub jungle_bottom_limit: f64,
     pub jungle_center_offset_range: f64,
     
+    // 雪原生成
+    pub snow_top_width_ratio: f64,
+    pub snow_bottom_width_ratio: f64,
+    pub snow_top_limit: f64,
+    pub snow_bottom_limit: f64,
+    pub snow_bottom_depth_factor: f64,
+    pub snow_center_offset_range: f64,
+    
+    // 沙漠生成
+    pub desert_surface_count: u32,
+    pub desert_surface_width_min: f64,
+    pub desert_surface_width_max: f64,
+    pub desert_surface_top_limit: f64,
+    pub desert_surface_bottom_limit: f64,
+    pub desert_surface_min_spacing: f64,
+    pub desert_underground_count: u32,
+    pub desert_underground_width_ratio: f64,
+    pub desert_underground_top_limit: f64,
+    pub desert_underground_bottom_limit: f64,
+    pub desert_underground_depth_factor: f64,
+    
     // TODO: 其他步骤参数
 }
 
 impl Default for BiomeDivisionParams {
     fn default() -> Self {
         Self {
-            ocean_left_width: 0.10,
-            ocean_right_width: 0.10,
+            ocean_left_width: 0.05,
+            ocean_right_width: 0.05,
             ocean_top_limit: 0.10,
             ocean_bottom_limit: 0.40,
             forest_width_ratio: 0.05,
-            jungle_width_ratio: 0.16,
+            jungle_width_ratio: 0.12,
             jungle_top_limit: 0.10,
             jungle_bottom_limit: 0.85,
             jungle_center_offset_range: 0.20,
+            snow_top_width_ratio: 0.08,
+            snow_bottom_width_ratio: 0.20,
+            snow_top_limit: 0.10,
+            snow_bottom_limit: 0.85,
+            snow_bottom_depth_factor: 0.8,
+            snow_center_offset_range: 0.12,
+            desert_surface_count: 3,
+            desert_surface_width_min: 0.025,
+            desert_surface_width_max: 0.06,
+            desert_surface_top_limit: 0.10,
+            desert_surface_bottom_limit: 0.40,
+            desert_surface_min_spacing: 0.15,
+            desert_underground_count: 1,
+            desert_underground_width_ratio: 0.08,
+            desert_underground_top_limit: 0.30,
+            desert_underground_bottom_limit: 0.85,
+            desert_underground_depth_factor: 0.70,
         }
     }
 }
@@ -154,6 +192,9 @@ impl BiomeDivisionAlgorithm {
         use rand::Rng;
         let place_on_left = ctx.rng.gen_bool(0.5);
         
+        // 保存到 shared 供雪原生成使用
+        ctx.shared.insert("jungle_on_left".into(), Box::new(place_on_left));
+        
         // 计算森林边界（水平居中，半宽 = forest_width_ratio）
         let forest_center = w / 2;
         let forest_half_width = (w as f64 * self.params.forest_width_ratio) as i32;
@@ -225,15 +266,222 @@ impl BiomeDivisionAlgorithm {
         Ok(())
     }
 
-    /// 3. 雪原生成 — 在世界另一侧生成雪原（占位符）
-    fn step_snow(&self, _ctx: &mut RuntimeContext) -> Result<(), String> {
-        // TODO: 实现雪原生成逻辑
+    /// 3. 雪原生成 — 在世界另一侧生成梯形雪原（上窄下宽）
+    fn step_snow(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
+        let snow_id = self.get_biome_id("snow")
+            .ok_or("未找到 snow 环境定义")?;
+        
+        let bm = ctx.biome_map.as_mut().ok_or("需先执行海洋生成")?;
+        let w = bm.width as i32;
+        let h = bm.height as i32;
+        
+        // 从 shared 读取丛林位置，雪原在对侧
+        use rand::Rng;
+        let jungle_on_left = ctx.shared.get("jungle_on_left")
+            .and_then(|v| v.downcast_ref::<bool>())
+            .copied()
+            .unwrap_or(false);
+        let place_on_left = !jungle_on_left;
+        
+        // 计算森林边界
+        let forest_center = w / 2;
+        let forest_half_width = (w as f64 * self.params.forest_width_ratio) as i32;
+        let forest_left = forest_center - forest_half_width;
+        let forest_right = forest_center + forest_half_width;
+        
+        // 计算海洋边界
+        let ocean_left_right = (w as f64 * self.params.ocean_left_width) as i32;
+        let ocean_right_left = w - (w as f64 * self.params.ocean_right_width) as i32;
+        
+        // 计算雪原可用空间和基础中心点
+        let (snow_cx_base, available_width) = if place_on_left {
+            let left = ocean_left_right;
+            let right = forest_left;
+            let width = right - left;
+            let center = left + width / 2;
+            (center, width)
+        } else {
+            let left = forest_right;
+            let right = ocean_right_left;
+            let width = right - left;
+            let center = left + width / 2;
+            (center, width)
+        };
+        
+        // 添加随机偏移
+        let max_offset = (available_width as f64 * self.params.snow_center_offset_range) as i32;
+        let offset = ctx.rng.gen_range(-max_offset..=max_offset);
+        let snow_cx = snow_cx_base + offset;
+        
+        // 梯形参数（上窄下宽）
+        let top_half_width = (w as f64 * self.params.snow_top_width_ratio / 2.0) as i32;
+        let bottom_half_width = (w as f64 * self.params.snow_bottom_width_ratio / 2.0) as i32;
+        
+        let top_y = (h as f64 * self.params.snow_top_limit) as i32;
+        let bottom_y = (h as f64 * self.params.snow_bottom_limit * self.params.snow_bottom_depth_factor) as i32;
+        
+        // 手动实现梯形填充 + 条件判断（只替换 BIOME_UNASSIGNED）
+        if top_y >= bottom_y {
+            return Ok(());
+        }
+        
+        let trap_h = (bottom_y - top_y) as f64;
+        for y in top_y..bottom_y.min(h) {
+            let t = (y - top_y) as f64 / trap_h;
+            
+            // 线性插值计算当前 y 的左右边界
+            let top_left = (snow_cx - top_half_width) as f64;
+            let top_right = (snow_cx + top_half_width) as f64;
+            let bottom_left = (snow_cx - bottom_half_width) as f64;
+            let bottom_right = (snow_cx + bottom_half_width) as f64;
+            
+            let left = top_left + (bottom_left - top_left) * t;
+            let right = top_right + (bottom_right - top_right) * t;
+            
+            let xl = (left.floor().max(0.0)) as i32;
+            let xr = (right.ceil().min(w as f64)) as i32;
+            
+            for x in xl..xr {
+                let current_id = bm.get(x as u32, y as u32);
+                if current_id == BIOME_UNASSIGNED {
+                    bm.set(x as u32, y as u32, snow_id);
+                }
+            }
+        }
+        
         Ok(())
     }
 
-    /// 4. 沙漠生成 — 在世界空白区域随机生成沙漠（占位符）
-    fn step_desert(&self, _ctx: &mut RuntimeContext) -> Result<(), String> {
-        // TODO: 实现沙漠生成逻辑
+    /// 4. 沙漠生成 — 在世界空白区域随机生成沙漠地表和地下沙漠
+    fn step_desert(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
+        let desert_surface_id = self.get_biome_id("desert")
+            .ok_or("未找到 desert 环境定义")?;
+        let desert_underground_id = self.get_biome_id("desert_underground")
+            .ok_or("未找到 desert_underground 环境定义")?;
+        
+        let bm = ctx.biome_map.as_mut().ok_or("需先执行海洋生成")?;
+        let w = bm.width as i32;
+        let h = bm.height as i32;
+        let world_center_x = w / 2;
+        
+        use rand::Rng;
+        
+        // === 第一阶段：生成多个沙漠地表（矩形） ===
+        
+        let surface_count = self.params.desert_surface_count;
+        let mut desert_positions: Vec<(i32, i32)> = Vec::new(); // (x_center, width)
+        
+        // 计算可用空间范围（排除已有环境的核心区域）
+        let forest_half = (w as f64 * self.params.forest_width_ratio) as i32;
+        let excluded_left = world_center_x - forest_half - (w as f64 * 0.05) as i32;
+        let excluded_right = world_center_x + forest_half + (w as f64 * 0.05) as i32;
+        
+        // 尝试随机放置沙漠地表
+        let mut attempts = 0;
+        while desert_positions.len() < surface_count as usize && attempts < surface_count * 10 {
+            attempts += 1;
+            
+            // 随机生成宽度和位置
+            let width_ratio = ctx.rng.gen_range(self.params.desert_surface_width_min..=self.params.desert_surface_width_max);
+            let width = (w as f64 * width_ratio) as i32;
+            let half_width = width / 2;
+            
+            // 随机选择中心点（避开中心森林区域）
+            let center_x = if ctx.rng.gen_bool(0.5) {
+                // 左侧区域
+                ctx.rng.gen_range(half_width..(excluded_left - half_width).max(half_width + 1))
+            } else {
+                // 右侧区域
+                ctx.rng.gen_range((excluded_right + half_width)..(w - half_width).max(excluded_right + half_width + 1))
+            };
+            
+            // 检查与已有沙漠的间距
+            let min_spacing = (w as f64 * self.params.desert_surface_min_spacing) as i32;
+            let mut valid = true;
+            for &(existing_x, existing_w) in &desert_positions {
+                let distance = (center_x - existing_x).abs();
+                let required_spacing = (width + existing_w) / 2 + min_spacing;
+                if distance < required_spacing {
+                    valid = false;
+                    break;
+                }
+            }
+            
+            if valid {
+                desert_positions.push((center_x, width));
+            }
+        }
+        
+        // 绘制沙漠地表矩形
+        let surface_top_y = (h as f64 * self.params.desert_surface_top_limit) as i32;
+        let surface_bottom_y = (h as f64 * self.params.desert_surface_bottom_limit) as i32;
+        
+        for &(center_x, width) in &desert_positions {
+            let half_width = width / 2;
+            let x_left = (center_x - half_width).max(0);
+            let x_right = (center_x + half_width).min(w);
+            
+            for y in surface_top_y..surface_bottom_y.min(h) {
+                for x in x_left..x_right {
+                    if bm.get(x as u32, y as u32) == BIOME_UNASSIGNED {
+                        bm.set(x as u32, y as u32, desert_surface_id);
+                    }
+                }
+            }
+        }
+        
+        // === 第二阶段：生成沙漠地下（椭圆） ===
+        
+        if desert_positions.is_empty() {
+            return Ok(());
+        }
+        
+        // 选择离世界中心最近的 N 个沙漠地表
+        let mut positions_with_distance: Vec<_> = desert_positions.iter()
+            .map(|&(x, w)| (x, w, (x - world_center_x).abs()))
+            .collect();
+        positions_with_distance.sort_by_key(|&(_, _, dist)| dist);
+        
+        let underground_count = (self.params.desert_underground_count as usize).min(positions_with_distance.len());
+        
+        for i in 0..underground_count {
+            let (center_x, _, _) = positions_with_distance[i];
+            
+            // 计算椭圆参数
+            let rx = (w as f64 * self.params.desert_underground_width_ratio / 2.0) as i32;
+            let cy = h / 2;
+            let ry = h / 2;
+            
+            let top_y = (h as f64 * self.params.desert_underground_top_limit) as i32;
+            let bottom_y = (h as f64 * self.params.desert_underground_bottom_limit * self.params.desert_underground_depth_factor) as i32;
+            
+            // 绘制椭圆（覆盖地表沙漠）
+            let x0 = (center_x - rx).max(0);
+            let x1 = (center_x + rx).min(w);
+            let y0 = (cy - ry).max(0);
+            let y1 = (cy + ry).min(h);
+            
+            for y in y0..y1 {
+                // y 范围裁剪
+                if y < top_y || y >= bottom_y {
+                    continue;
+                }
+                
+                for x in x0..x1 {
+                    let current_id = bm.get(x as u32, y as u32);
+                    // 只在 UNASSIGNED 或 desert_surface 上写入
+                    if current_id == BIOME_UNASSIGNED || current_id == desert_surface_id {
+                        // 椭圆方程判定
+                        let dx = (x - center_x) as f64 / rx as f64;
+                        let dy = (y - cy) as f64 / ry as f64;
+                        if dx * dx + dy * dy <= 1.0 {
+                            bm.set(x as u32, y as u32, desert_underground_id);
+                        }
+                    }
+                }
+            }
+        }
+        
         Ok(())
     }
 
@@ -303,7 +551,7 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     name: "左侧海洋宽度".to_string(),
                     description: "左侧海洋占世界宽度的比例".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.10),
+                    default: serde_json::json!(0.05),
                     group: Some("海洋生成".to_string()),
                 },
                 ParamDef {
@@ -311,7 +559,7 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     name: "右侧海洋宽度".to_string(),
                     description: "右侧海洋占世界宽度的比例".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.10),
+                    default: serde_json::json!(0.05),
                     group: Some("海洋生成".to_string()),
                 },
                 ParamDef {
@@ -343,7 +591,7 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     name: "丛林宽度比例".to_string(),
                     description: "丛林椭圆的宽度（相对世界宽度）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.16),
+                    default: serde_json::json!(0.12),
                     group: Some("丛林生成".to_string()),
                 },
                 ParamDef {
@@ -369,6 +617,141 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     param_type: ParamType::Float { min: 0.0, max: 0.5 },
                     default: serde_json::json!(0.20),
                     group: Some("丛林生成".to_string()),
+                },                ParamDef {
+                    key: "snow_top_width_ratio".to_string(),
+                    name: "雪原上边宽度".to_string(),
+                    description: "雪原梯形上边宽度（地表层，相对世界宽度）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.08),
+                    group: Some("雪原生成".to_string()),
+                },
+                ParamDef {
+                    key: "snow_bottom_width_ratio".to_string(),
+                    name: "雪原下边宽度".to_string(),
+                    description: "雪原梯形下边宽度（洞穴层，相对世界宽度）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.20),
+                    group: Some("雪原生成".to_string()),
+                },
+                ParamDef {
+                    key: "snow_top_limit".to_string(),
+                    name: "雪原上边界".to_string(),
+                    description: "雪原顶部边界（0.0=世界顶，0.10=地表层顶）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.1),
+                    group: Some("雪原生成".to_string()),
+                },
+                ParamDef {
+                    key: "snow_bottom_limit".to_string(),
+                    name: "雪原下边界".to_string(),
+                    description: "雪原底部边界（用于计算实际深度，0.85=洞穴层底）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.85),
+                    group: Some("雪原生成".to_string()),
+                },
+                ParamDef {
+                    key: "snow_bottom_depth_factor".to_string(),
+                    name: "雪原深度因子".to_string(),
+                    description: "控制雪原向下延伸深度（实际深度 = 下边界 × 深度因子，避免触及地狱）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.8),
+                    group: Some("雪原生成".to_string()),
+                },
+                ParamDef {
+                    key: "snow_center_offset_range".to_string(),
+                    name: "中心偏移范围".to_string(),
+                    description: "雪原中心点在可用空间内的随机偏移范围（0.0=无偏移，0.12=±12%）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 0.5 },
+                    default: serde_json::json!(0.12),
+                    group: Some("雪原生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_surface_count".to_string(),
+                    name: "沙漠地表数量".to_string(),
+                    description: "生成的沙漠地表区域数量".to_string(),
+                    param_type: ParamType::Int { min: 0, max: 10 },
+                    default: serde_json::json!(3),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_surface_width_min".to_string(),
+                    name: "沙漠地表最小宽度".to_string(),
+                    description: "沙漠地表矩形最小宽度（相对世界宽度）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.025),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_surface_width_max".to_string(),
+                    name: "沙漠地表最大宽度".to_string(),
+                    description: "沙漠地表矩形最大宽度（相对世界宽度）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.06),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_surface_top_limit".to_string(),
+                    name: "沙漠地表上边界".to_string(),
+                    description: "沙漠地表顶部边界（0.10=地表层顶）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.10),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_surface_bottom_limit".to_string(),
+                    name: "沙漠地表下边界".to_string(),
+                    description: "沙漠地表底部边界（0.40=地下层底）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.40),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_surface_min_spacing".to_string(),
+                    name: "沙漠地表最小间距".to_string(),
+                    description: "相邻沙漠地表之间的最小间距（相对世界宽度）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.15),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_underground_count".to_string(),
+                    name: "地下沙漠数量".to_string(),
+                    description: "生成的地下沙漠（真沙漠）数量，选择离中心最近的地表".to_string(),
+                    param_type: ParamType::Int { min: 0, max: 5 },
+                    default: serde_json::json!(1),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_underground_width_ratio".to_string(),
+                    name: "地下沙漠宽度".to_string(),
+                    description: "地下沙漠椭圆宽度（相对世界宽度）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.08),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_underground_top_limit".to_string(),
+                    name: "地下沙漠上边界".to_string(),
+                    description: "地下沙漠顶部边界（0.30=地下层顶）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.30),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_underground_bottom_limit".to_string(),
+                    name: "地下沙漠下边界".to_string(),
+                    description: "地下沙漠底部边界基准（0.85=洞穴层底）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.85),
+                    group: Some("沙漠生成".to_string()),
+                },
+                ParamDef {
+                    key: "desert_underground_depth_factor".to_string(),
+                    name: "地下沙漠深度因子".to_string(),
+                    description: "控制地下沙漠向下延伸深度（实际深度 = 下边界 × 深度因子）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.70),
+                    group: Some("沙漠生成".to_string()),
                 },
             ],
         }
