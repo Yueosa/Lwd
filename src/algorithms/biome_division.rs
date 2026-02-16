@@ -983,6 +983,28 @@ impl BiomeDivisionAlgorithm {
         Ok(())
     }
 
+    /// 8. 地块填充 — 将世界内所有剩余的 UNASSIGNED 区域填充为地块（石头）
+    ///
+    /// 主要填充洞穴层（40%-85%）中未被任何环境覆盖的区域。
+    fn step_stone_fill(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
+        let stone_id = self.get_biome_id("stone")
+            .ok_or("未找到 stone 环境定义")?;
+        
+        let bm = ctx.biome_map.as_mut().ok_or("需先执行前置步骤")?;
+        let w = bm.width;
+        let h = bm.height;
+        
+        for y in 0..h {
+            for x in 0..w {
+                if bm.get(x, y) == BIOME_UNASSIGNED {
+                    bm.set(x, y, stone_id);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -997,43 +1019,57 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
             description: "将世界划分为不同的环境区域（海洋、森林、丛林、雪原、沙漠、猩红）".to_string(),
             steps: vec![
                 StepMeta {
+                    display_index: 1,
                     name: "太空/地狱填充".to_string(),
                     description: "初始化世界并填充太空层(0-10%)和地狱层(85-100%)".to_string(),
                     doc_url: None,
                 },
                 StepMeta {
+                    display_index: 2,
                     name: "海洋生成".to_string(),
                     description: "在世界两侧生成海洋区域".to_string(),
                     doc_url: None,
                 },
                 StepMeta {
+                    display_index: 3,
                     name: "森林生成".to_string(),
                     description: "在世界中心生成森林".to_string(),
                     doc_url: None,
                 },
                 StepMeta {
+                    display_index: 4,
                     name: "丛林生成".to_string(),
                     description: "在世界一侧生成丛林".to_string(),
                     doc_url: None,
                 },
                 StepMeta {
+                    display_index: 5,
                     name: "雪原生成".to_string(),
                     description: "在世界另一侧生成雪原".to_string(),
                     doc_url: None,
                 },
                 StepMeta {
+                    display_index: 6,
                     name: "沙漠生成".to_string(),
                     description: "在世界空白区域随机生成沙漠地表".to_string(),
                     doc_url: None,
                 },
                 StepMeta {
+                    display_index: 7,
                     name: "猩红生成".to_string(),
                     description: "在世界空白区域随机生成猩红".to_string(),
                     doc_url: None,
                 },
                 StepMeta {
+                    display_index: 8,
                     name: "森林填充".to_string(),
                     description: "沙漠/猩红扩散 + 剩余空白填充为森林".to_string(),
+                    doc_url: None,
+                },
+                StepMeta {
+                    display_index: 9,
+                    name: "地块填充".to_string(),
+                    description: "将所有剩余空白区域填充为岩石地块".to_string(),
                     doc_url: None,
                 },
             ],
@@ -1307,6 +1343,7 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
             5 => self.step_desert(ctx),
             6 => self.step_crimson(ctx),
             7 => self.step_forest_fill(ctx),
+            8 => self.step_stone_fill(ctx),
             _ => Err(format!("无效步骤索引: {step_index}")),
         }
     }
