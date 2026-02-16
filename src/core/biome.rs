@@ -14,7 +14,6 @@ pub struct BiomeDefinition {
     pub key: String,
     pub name: String,
     pub overlay_color: [u8; 4],
-    pub generation_weight: u32,
     pub description: String,
 }
 
@@ -26,7 +25,6 @@ pub fn build_biome_definitions(config: &BiomesConfig) -> Vec<BiomeDefinition> {
             key: biome.key.clone(),
             name: biome.name.clone(),
             overlay_color: biome.overlay_color,
-            generation_weight: biome.generation_weight,
             description: biome.description.clone(),
         })
         .collect()
