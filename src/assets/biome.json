@@ -3,42 +3,36 @@
     "key": "ocean",
     "name": "海洋",
     "overlay_color": [50, 100, 200, 80],
-    "generation_weight": 0,
     "description": "水域环境，通常位于世界两侧边缘"
   },
   "2": {
     "key": "forest",
     "name": "森林",
     "overlay_color": [60, 150, 60, 80],
-    "generation_weight": 31,
     "description": "温和的森林环境，树木茂密"
   },
   "3": {
     "key": "desert",
     "name": "沙漠",
     "overlay_color": [220, 180, 80, 80],
-    "generation_weight": 25,
     "description": "干燥的沙漠环境，黄沙遍布"
   },
   "4": {
     "key": "snow",
     "name": "雪地",
     "overlay_color": [200, 220, 255, 80],
-    "generation_weight": 9,
     "description": "寒冷的冰雪环境"
   },
   "5": {
     "key": "jungle",
     "name": "丛林",
     "overlay_color": [40, 120, 40, 80],
-    "generation_weight": 20,
     "description": "茂密的热带丛林环境"
   },
   "6": {
     "key": "crimson",
     "name": "猩红",
     "overlay_color": [200, 40, 60, 80],
-    "generation_weight": 15,
     "description": "邪恶的猩红环境"
   }
 }
