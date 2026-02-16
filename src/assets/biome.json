@@ -36,8 +36,8 @@
     "description": "邪恶的猩红环境"
   },
   "7": {
-    "key": "desert_underground",
-    "name": "地下沙漠",
+    "key": "desert_true",
+    "name": "真沙漠",
     "overlay_color": [180, 140, 50, 80],
     "description": "地下深层沙漠环境"
   }
