@@ -25,28 +25,28 @@
     "layers": {
         "space": {
             "start_percent": 0,
-            "end_percent": 5,
-            "description": "太空层 - 占总高度的5%"
+            "end_percent": 10,
+            "description": "太空层 - 占总高度的10%"
         },
         "surface": {
-            "start_percent": 5,
-            "end_percent": 25,
+            "start_percent": 10,
+            "end_percent": 30,
             "description": "地表层 - 占总高度的20%"
         },
         "underground": {
-            "start_percent": 25,
-            "end_percent": 35,
+            "start_percent": 30,
+            "end_percent": 40,
             "description": "地下层 - 占总高度的10%"
         },
         "cavern": {
-            "start_percent": 35,
-            "end_percent": 80,
+            "start_percent": 40,
+            "end_percent": 85,
             "description": "洞穴层 - 占总高度的45%"
         },
         "hell": {
-            "start_percent": 80,
+            "start_percent": 85,
             "end_percent": 100,
-            "description": "地狱层 - 占总高度的20%"
+            "description": "地狱层 - 占总高度的15%"
         }
     }
 }
