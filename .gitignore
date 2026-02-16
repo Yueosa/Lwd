@@ -1,6 +1,9 @@
 # 编译文件
 /target
 
+# 结果产物
+/build
+
 # 运行时参数
 generation.runtime.json
 
