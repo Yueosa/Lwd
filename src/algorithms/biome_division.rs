@@ -32,6 +32,11 @@ pub struct BiomeDivisionParams {
     // 森林生成
     pub forest_width_ratio: f64,
     
+    // 丛林生成
+    pub jungle_width_ratio: f64,
+    pub jungle_top_limit: f64,
+    pub jungle_bottom_limit: f64,
+    
     // TODO: 其他步骤参数
 }
 
@@ -43,6 +48,9 @@ impl Default for BiomeDivisionParams {
             ocean_top_limit: 0.10,
             ocean_bottom_limit: 0.40,
             forest_width_ratio: 0.05,
+            jungle_width_ratio: 0.16,
+            jungle_top_limit: 0.10,
+            jungle_bottom_limit: 0.85,
         }
     }
 }
@@ -131,9 +139,82 @@ impl BiomeDivisionAlgorithm {
         Ok(())
     }
 
-    /// 2. 丛林生成 — 在世界一侧生成丛林（占位符）
-    fn step_jungle(&self, _ctx: &mut RuntimeContext) -> Result<(), String> {
-        // TODO: 实现丛林生成逻辑
+    /// 2. 丛林生成 — 在世界一侧生成椭圆丛林
+    fn step_jungle(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
+        let jungle_id = self.get_biome_id("jungle")
+            .ok_or("未找到 jungle 环境定义")?;
+        
+        let bm = ctx.biome_map.as_mut().ok_or("需先执行海洋生成")?;
+        let w = bm.width as i32;
+        let h = bm.height as i32;
+        
+        // 基于 RNG 随机选择左/右
+        use rand::Rng;
+        let place_on_left = ctx.rng.gen_bool(0.5);
+        
+        // 计算森林边界（水平居中，半宽 = forest_width_ratio）
+        let forest_center = w / 2;
+        let forest_half_width = (w as f64 * self.params.forest_width_ratio) as i32;
+        let forest_left = forest_center - forest_half_width;
+        let forest_right = forest_center + forest_half_width;
+        
+        // 计算海洋边界
+        let ocean_left_right = (w as f64 * self.params.ocean_left_width) as i32;
+        let ocean_right_left = w - (w as f64 * self.params.ocean_right_width) as i32;
+        
+        // 计算丛林可用空间和中心点
+        let (jungle_cx, _available_width) = if place_on_left {
+            // 左侧：海洋右边界 → 森林左边界
+            let left = ocean_left_right;
+            let right = forest_left;
+            let width = right - left;
+            let center = left + width / 2;
+            (center, width)
+        } else {
+            // 右侧：森林右边界 → 海洋左边界
+            let left = forest_right;
+            let right = ocean_right_left;
+            let width = right - left;
+            let center = left + width / 2;
+            (center, width)
+        };
+        
+        // 丛林椭圆参数
+        let jungle_rx = (w as f64 * self.params.jungle_width_ratio / 2.0) as i32;
+        let jungle_cy = h / 2;  // 椭圆中心在世界垂直中心
+        let jungle_ry = h / 2;  // 椭圆半径覆盖整个世界高度
+        
+        // 实际写入范围（裁剪）
+        let top_y = (h as f64 * self.params.jungle_top_limit) as i32;
+        let bottom_y = (h as f64 * self.params.jungle_bottom_limit) as i32;
+        
+        // 手动实现椭圆填充 + y范围裁剪
+        let x0 = (jungle_cx - jungle_rx).max(0);
+        let x1 = (jungle_cx + jungle_rx).min(w);
+        let y0 = (jungle_cy - jungle_ry).max(0);
+        let y1 = (jungle_cy + jungle_ry).min(h);
+        
+        for y in y0..y1 {
+            // y 范围裁剪
+            if y < top_y || y >= bottom_y {
+                continue;
+            }
+            
+            for x in x0..x1 {
+                let current_id = bm.get(x as u32, y as u32);
+                if current_id != BIOME_UNASSIGNED {
+                    continue;
+                }
+                
+                // 椭圆方程判定
+                let dx = (x - jungle_cx) as f64 / jungle_rx as f64;
+                let dy = (y - jungle_cy) as f64 / jungle_ry as f64;
+                if dx * dx + dy * dy <= 1.0 {
+                    bm.set(x as u32, y as u32, jungle_id);
+                }
+            }
+        }
+        
         Ok(())
     }
 
@@ -249,6 +330,30 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
                     default: serde_json::json!(0.15),
                     group: Some("森林生成".to_string()),
+                },
+                ParamDef {
+                    key: "jungle_width_ratio".to_string(),
+                    name: "丛林宽度比例".to_string(),
+                    description: "丛林椭圆的宽度（相对世界宽度）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.16),
+                    group: Some("丛林生成".to_string()),
+                },
+                ParamDef {
+                    key: "jungle_top_limit".to_string(),
+                    name: "丛林上边界".to_string(),
+                    description: "丛林实际生成的顶部限制（0.0=世界顶，0.10=地表层顶）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.10),
+                    group: Some("丛林生成".to_string()),
+                },
+                ParamDef {
+                    key: "jungle_bottom_limit".to_string(),
+                    name: "丛林下边界".to_string(),
+                    description: "丛林实际生成的底部限制（0.85=洞穴层底，1.0=地狱顶）".to_string(),
+                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
+                    default: serde_json::json!(0.85),
+                    group: Some("丛林生成".to_string()),
                 },
             ],
         }
