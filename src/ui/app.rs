@@ -74,10 +74,10 @@ pub struct LianWorldApp {
     show_geo_preview: bool,
     /// 几何预览窗口状态
     geo_preview_state: GeoPreviewState,
-    /// 是否显示图形 API 沙箱窗口
-    show_shape_sandbox: bool,
-    /// 图形 API 沙箱状态
-    shape_sandbox_state: ShapeSandboxState,
+    /// 图形 API 沙箱实例列表（支持多开）
+    shape_sandboxes: Vec<ShapeSandboxState>,
+    /// 沙箱 ID 计数器
+    next_sandbox_id: usize,
     /// 是否已经开始过生成（用于控制 splash 显示）
     has_started_generation: bool,
     /// 手动种子输入框的文本内容
@@ -144,8 +144,8 @@ impl LianWorldApp {
             show_algo_config: false,
             show_geo_preview: false,
             geo_preview_state: GeoPreviewState::default(),
-            show_shape_sandbox: false,
-            shape_sandbox_state: ShapeSandboxState::default(),
+            shape_sandboxes: Vec::new(),
+            next_sandbox_id: 0,
             has_started_generation: false,
             seed_input: String::new(),
         };
@@ -627,7 +627,9 @@ impl eframe::App for LianWorldApp {
 
         // ── shape sandbox ──
         if action.open_shape_sandbox {
-            self.show_shape_sandbox = true;
+            let id = self.next_sandbox_id;
+            self.next_sandbox_id += 1;
+            self.shape_sandboxes.push(ShapeSandboxState::new(id));
         }
 
         // ── overlay config window ──
@@ -718,15 +720,15 @@ impl eframe::App for LianWorldApp {
             );
         }
 
-        // ── shape sandbox window ──
-        if self.show_shape_sandbox {
-            show_shape_sandbox_window(
-                ctx,
-                &mut self.show_shape_sandbox,
-                &mut self.shape_sandbox_state,
-                (self.world.width, self.world.height),
-            );
+        // ── shape sandbox windows (多实例) ──
+        let ws = (self.world.width, self.world.height);
+        for sandbox in &mut self.shape_sandboxes {
+            if sandbox.open {
+                show_shape_sandbox_window(ctx, sandbox, ws);
+            }
         }
+        // 清理已关闭的沙箱
+        self.shape_sandboxes.retain(|s| s.open);
         
         if self.show_layer_config {
             let changed = show_layer_config_window(

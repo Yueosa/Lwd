@@ -252,6 +252,12 @@ pub struct CombineNode {
 
 /// 沙箱窗口持久状态
 pub struct ShapeSandboxState {
+    /// 实例 ID（用于区分多个窗口）
+    pub id: usize,
+    /// 窗口是否打开
+    pub open: bool,
+    /// 自定义标题后缀
+    pub title: String,
     /// 基础形状列表
     pub shapes: Vec<SandboxShape>,
     /// 组合运算列表
@@ -274,11 +280,17 @@ pub struct ShapeSandboxState {
     pub new_combine_op: SetOp,
     /// 显示模式：0=仅基础, 1=仅组合, 2=全部
     pub display_mode: u8,
+    /// 组合运算采样质量 (1=低, 2=中, 4=高, 8=极高)
+    pub combine_quality: i32,
 }
 
-impl Default for ShapeSandboxState {
-    fn default() -> Self {
+impl ShapeSandboxState {
+    /// 创建指定 id 的新沙箱
+    pub fn new(id: usize) -> Self {
         Self {
+            id,
+            open: true,
+            title: format!("沙箱 #{}", id + 1),
             shapes: Vec::new(),
             combines: Vec::new(),
             selected_shape: None,
@@ -290,7 +302,14 @@ impl Default for ShapeSandboxState {
             new_combine_right: 0,
             new_combine_op: SetOp::Union,
             display_mode: 2,
+            combine_quality: 2,
         }
+    }
+}
+
+impl Default for ShapeSandboxState {
+    fn default() -> Self {
+        Self::new(0)
     }
 }
 
@@ -301,12 +320,15 @@ impl Default for ShapeSandboxState {
 /// 显示图形 API 沙箱窗口。
 pub fn show_shape_sandbox_window(
     ctx: &Context,
-    open: &mut bool,
     state: &mut ShapeSandboxState,
     world_size: (u32, u32),
 ) {
-    egui::Window::new("◈ 图形 API 沙箱")
-        .open(open)
+    let win_title = format!("◈ {} — 图形 API 沙箱", state.title);
+    let win_id = egui::Id::new("shape_sandbox").with(state.id);
+    let mut still_open = state.open;
+    egui::Window::new(win_title)
+        .id(win_id)
+        .open(&mut still_open)
         .resizable(true)
         .default_width(600.0)
         .default_height(640.0)
@@ -318,18 +340,25 @@ pub fn show_shape_sandbox_window(
 
             // ── 主体区域：左形状列表 + 右画布 ──
             let available = ui.available_size();
-            let list_width = 220.0_f32.min(available.x * 0.4);
+            let list_width = 240.0_f32.min(available.x * 0.42);
+            let body_height = available.y;
 
             ui.horizontal(|ui| {
-                // 左侧：形状列表 + 组合列表
+                // 左侧：形状列表 + 组合列表（填满整个左侧高度）
                 ui.vertical(|ui| {
                     ui.set_width(list_width);
+                    ui.set_min_height(body_height);
                     egui::ScrollArea::vertical()
-                        .max_height(available.y - 30.0)
+                        .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            ui.set_min_width(list_width - 8.0);
                             draw_shape_list(ui, state);
+                            ui.add_space(8.0);
                             ui.separator();
+                            ui.add_space(4.0);
                             draw_combine_list(ui, state);
+                            // 底部留白，确保滚动区域撑满
+                            ui.add_space(ui.available_height().max(20.0));
                         });
                 });
 
@@ -343,6 +372,7 @@ pub fn show_shape_sandbox_window(
                 });
             });
         });
+    state.open = still_open;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -354,7 +384,7 @@ fn draw_toolbar(ui: &mut Ui, state: &mut ShapeSandboxState, world_size: (u32, u3
         ui.label("添加形状:");
 
         // 形状类型选择
-        egui::ComboBox::from_id_source("sandbox_shape_kind")
+        egui::ComboBox::from_id_source(("sandbox_shape_kind", state.id))
             .selected_text(state.new_shape_kind.display_name())
             .width(70.0)
             .show_ui(ui, |ui: &mut Ui| {
@@ -385,6 +415,26 @@ fn draw_toolbar(ui: &mut Ui, state: &mut ShapeSandboxState, world_size: (u32, u3
                 state.display_mode = i as u8;
             }
         }
+
+        ui.separator();
+
+        // 组合精度控制
+        ui.label("精度:");
+        let quality_text = match state.combine_quality {
+            1 => "低",
+            2 => "中",
+            4 => "高",
+            _ => "极高",
+        };
+        egui::ComboBox::from_id_source(("combine_quality", state.id))
+            .selected_text(quality_text)
+            .width(50.0)
+            .show_ui(ui, |ui: &mut Ui| {
+                ui.selectable_value(&mut state.combine_quality, 1, "低 (快)");
+                ui.selectable_value(&mut state.combine_quality, 2, "中");
+                ui.selectable_value(&mut state.combine_quality, 4, "高");
+                ui.selectable_value(&mut state.combine_quality, 8, "极高 (慢)");
+            });
 
         ui.separator();
 
@@ -482,7 +532,7 @@ fn draw_combine_list(ui: &mut Ui, state: &mut ShapeSandboxState) {
         } else {
             "?".to_string()
         };
-        egui::ComboBox::from_id_source("comb_left")
+        egui::ComboBox::from_id_source(("comb_left", state.id))
             .selected_text(&left_label)
             .width(40.0)
             .show_ui(ui, |ui| {
@@ -496,7 +546,7 @@ fn draw_combine_list(ui: &mut Ui, state: &mut ShapeSandboxState) {
             });
 
         // 运算符
-        egui::ComboBox::from_id_source("comb_op")
+        egui::ComboBox::from_id_source(("comb_op", state.id))
             .selected_text(state.new_combine_op.symbol())
             .width(50.0)
             .show_ui(ui, |ui| {
@@ -511,7 +561,7 @@ fn draw_combine_list(ui: &mut Ui, state: &mut ShapeSandboxState) {
         } else {
             "?".to_string()
         };
-        egui::ComboBox::from_id_source("comb_right")
+        egui::ComboBox::from_id_source(("comb_right", state.id))
             .selected_text(&right_label)
             .width(40.0)
             .show_ui(ui, |ui| {
@@ -692,7 +742,17 @@ fn draw_sandbox_canvas(
             let right = right.unwrap();
 
             let is_sel = state.selected_combine == Some(ci);
-            draw_combine_result(&painter, left, right, comb, is_sel, &w2c, scale, world_size);
+            draw_combine_result(
+                &painter,
+                left,
+                right,
+                comb,
+                is_sel,
+                &w2c,
+                scale,
+                world_size,
+                state.combine_quality,
+            );
         }
     }
 
@@ -801,7 +861,71 @@ fn draw_sandbox_shape(
     );
 }
 
+/// 使用自定义颜色绘制形状（用于组合运算）
+fn draw_shape_with_color(
+    painter: &egui::Painter,
+    shape: &SandboxShape,
+    fill: Color32,
+    stroke_c: Color32,
+    sw: f32,
+    w2c: &dyn Fn(f32, f32) -> Pos2,
+    scale: f32,
+    show_label: bool,
+) {
+    match shape.kind {
+        ShapeKind::Rect => {
+            let tl = w2c(shape.rect_x0 as f32, shape.rect_y0 as f32);
+            let br = w2c(shape.rect_x1 as f32, shape.rect_y1 as f32);
+            let rect = EguiRect::from_min_max(tl, br);
+            painter.rect_filled(rect, 0.0, fill);
+            painter.rect_stroke(rect, 0.0, Stroke::new(sw, stroke_c));
+        }
+        ShapeKind::Ellipse => {
+            let center = w2c(shape.ell_cx as f32, shape.ell_cy as f32);
+            let radius = Vec2::new(shape.ell_rx as f32 * scale, shape.ell_ry as f32 * scale);
+            painter.add(egui::Shape::ellipse_filled(center, radius, fill));
+            painter.add(egui::Shape::ellipse_stroke(center, radius, Stroke::new(sw, stroke_c)));
+        }
+        ShapeKind::Trapezoid => {
+            let p0 = w2c(shape.trap_top_x0 as f32, shape.trap_y_top as f32);
+            let p1 = w2c(shape.trap_top_x1 as f32, shape.trap_y_top as f32);
+            let p2 = w2c(shape.trap_bot_x1 as f32, shape.trap_y_bot as f32);
+            let p3 = w2c(shape.trap_bot_x0 as f32, shape.trap_y_bot as f32);
+            painter.add(egui::Shape::convex_polygon(
+                vec![p0, p1, p2, p3],
+                fill,
+                Stroke::new(sw, stroke_c),
+            ));
+        }
+        ShapeKind::Column => {
+            let top = w2c(shape.col_x as f32, shape.col_y_start as f32);
+            let bot = w2c(shape.col_x as f32 + 1.0, shape.col_y_end as f32);
+            let rect = EguiRect::from_min_max(top, bot);
+            painter.rect_filled(rect, 0.0, fill);
+            painter.rect_stroke(rect, 0.0, Stroke::new(sw, stroke_c));
+        }
+    }
+
+    if show_label {
+        let bb = shape.bounding_box();
+        let label_pos = w2c(
+            (bb.x_min + bb.x_max) as f32 / 2.0,
+            bb.y_min as f32,
+        );
+        painter.text(
+            Pos2::new(label_pos.x, label_pos.y - 6.0),
+            egui::Align2::CENTER_BOTTOM,
+            &shape.label,
+            egui::FontId::proportional(10.0),
+            stroke_c,
+        );
+    }
+}
+
 /// 绘制组合运算结果（通过像素采样实现精确预览）
+/// 绘制组合运算结果
+/// - Union: 直接绘制两个形状（矢量，性能最优）
+/// - Intersect/Subtract: 使用自适应采样（根据 quality 控制精度）
 fn draw_combine_result(
     painter: &egui::Painter,
     left: &SandboxShape,
@@ -811,42 +935,82 @@ fn draw_combine_result(
     w2c: &dyn Fn(f32, f32) -> Pos2,
     scale: f32,
     world_size: (u32, u32),
+    quality: i32,
 ) {
     let [r, g, b, a] = comb.color;
     let fill_alpha = if is_selected { (a as u16 + 50).min(200) as u8 } else { a };
     let fill = Color32::from_rgba_unmultiplied(r, g, b, fill_alpha);
 
-    // 计算采样范围（两形状 bbox 的并集）
+    // 并集特别优化：直接绘制两个形状，不采样
+    if comb.op == SetOp::Union {
+        // 使用组合的颜色和透明度绘制两个形状
+        let stroke_c = if is_selected {
+            Color32::from_rgb(255, 255, 100)
+        } else {
+            Color32::from_rgba_unmultiplied(r, g, b, (a as u16 + 100).min(255) as u8)
+        };
+        let sw = if is_selected { 2.5 } else { 1.0 };
+        
+        // 绘制左形状
+        draw_shape_with_color(painter, left, fill, stroke_c, sw, w2c, scale, false);
+        // 绘制右形状
+        draw_shape_with_color(painter, right, fill, stroke_c, sw, w2c, scale, false);
+        
+        // 只在选中时显示 bbox 边框
+        if is_selected {
+            let bb = left.bounding_box().union(right.bounding_box());
+            let tl = w2c(bb.x_min as f32, bb.y_min as f32);
+            let br = w2c(bb.x_max as f32, bb.y_max as f32);
+            painter.rect_stroke(
+                EguiRect::from_min_max(tl, br),
+                0.0,
+                Stroke::new(2.0, Color32::from_rgb(255, 255, 100)),
+            );
+        }
+        return;
+    }
+
+    // 交集/差集：使用自适应采样
     let bb_l = left.bounding_box();
     let bb_r = right.bounding_box();
     let bb = match comb.op {
-        SetOp::Union => bb_l.union(bb_r),
+        SetOp::Union => unreachable!(), // 已在上面处理
         SetOp::Intersect => bb_l.intersect(bb_r),
-        SetOp::Subtract => bb_l, // 差集范围 = A 的 bbox
+        SetOp::Subtract => bb_l,
     };
 
     if bb.is_empty() {
         return;
     }
 
-    // 限制到世界范围
     let x0 = bb.x_min.max(0);
     let y0 = bb.y_min.max(0);
     let x1 = bb.x_max.min(world_size.0 as i32);
     let y1 = bb.y_max.min(world_size.1 as i32);
 
-    // 计算像素大小（屏幕空间）来决定采样步长
+    // 根据 quality 调整基础采样步长
+    // quality: 1=低(step=8), 2=中(step=4), 4=高(step=2), 8=极高(step=1)
+    let base_step = match quality {
+        1 => 8,
+        2 => 4,
+        4 => 2,
+        _ => 1,
+    };
+
+    // 自适应：缩小时进一步增大步长
     let pixel_size = scale;
-    // 如果每个世界像素在屏幕上小于 2px，跳步采样
-    let step = if pixel_size < 1.0 {
-        (1.0 / pixel_size).ceil() as i32
+    let adaptive_step = if pixel_size < 0.3 {
+        base_step * 4
+    } else if pixel_size < 0.6 {
+        base_step * 2
     } else {
-        1
-    }.max(1).min(8);
+        base_step
+    };
 
-    // 像素级采样绘制
-    let dot_size = (pixel_size * step as f32).max(1.0);
+    let step = adaptive_step.max(1);
+    let dot_size = (pixel_size * step as f32).max(0.8);
 
+    // 采样绘制
     let mut y = y0;
     while y < y1 {
         let mut x = x0;
@@ -854,7 +1018,7 @@ fn draw_combine_result(
             let in_left = left.contains(x, y);
             let in_right = right.contains(x, y);
             let in_result = match comb.op {
-                SetOp::Union => in_left || in_right,
+                SetOp::Union => unreachable!(),
                 SetOp::Intersect => in_left && in_right,
                 SetOp::Subtract => in_left && !in_right,
             };
@@ -868,20 +1032,18 @@ fn draw_combine_result(
         y += step;
     }
 
-    // 组合 bbox 轮廓
-    let stroke_c = if is_selected {
-        Color32::from_rgb(255, 255, 100)
-    } else {
-        Color32::from_rgba_unmultiplied(r, g, b, 180)
-    };
-    let sw = if is_selected { 2.0 } else { 1.0 };
-    let tl = w2c(bb.x_min as f32, bb.y_min as f32);
-    let br = w2c(bb.x_max as f32, bb.y_max as f32);
-    painter.rect_stroke(
-        EguiRect::from_min_max(tl, br),
-        0.0,
-        Stroke::new(sw, stroke_c),
-    );
+    // 组合 bbox 轮廓（仅在选中时显示，避免与实际形状混淆）
+    if is_selected {
+        let stroke_c = Color32::from_rgb(255, 255, 100);
+        let sw = 2.0;
+        let tl = w2c(bb.x_min as f32, bb.y_min as f32);
+        let br = w2c(bb.x_max as f32, bb.y_max as f32);
+        painter.rect_stroke(
+            EguiRect::from_min_max(tl, br),
+            0.0,
+            Stroke::new(sw, stroke_c),
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -889,10 +1051,11 @@ fn draw_combine_result(
 // ═══════════════════════════════════════════════════════════
 
 fn draw_detail_panel(ui: &mut Ui, state: &mut ShapeSandboxState) {
+    let sid = state.id;
     // 如果选中了基础形状，编辑其参数
     if let Some(idx) = state.selected_shape {
         if idx < state.shapes.len() {
-            draw_shape_editor(ui, &mut state.shapes[idx]);
+            draw_shape_editor(ui, &mut state.shapes[idx], sid);
             return;
         }
     }
@@ -900,7 +1063,7 @@ fn draw_detail_panel(ui: &mut Ui, state: &mut ShapeSandboxState) {
     // 如果选中了组合，显示组合信息
     if let Some(ci) = state.selected_combine {
         if ci < state.combines.len() {
-            draw_combine_detail(ui, &state.combines[ci], &state.shapes);
+            draw_combine_detail(ui, &state.combines[ci], &state.shapes, sid);
             return;
         }
     }
@@ -908,7 +1071,7 @@ fn draw_detail_panel(ui: &mut Ui, state: &mut ShapeSandboxState) {
     ui.weak("选择一个形状或组合查看详情");
 }
 
-fn draw_shape_editor(ui: &mut Ui, shape: &mut SandboxShape) {
+fn draw_shape_editor(ui: &mut Ui, shape: &mut SandboxShape, sandbox_id: usize) {
     ui.strong(format!("✏ {} — {}", shape.label, shape.kind.display_name()));
     ui.add_space(4.0);
 
@@ -923,7 +1086,7 @@ fn draw_shape_editor(ui: &mut Ui, shape: &mut SandboxShape) {
     // 参数滑块（根据 kind）
     match shape.kind {
         ShapeKind::Rect => {
-            egui::Grid::new("rect_editor").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            egui::Grid::new(("rect_editor", sandbox_id)).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                 ui.label("x0:");
                 ui.add(egui::DragValue::new(&mut shape.rect_x0).speed(1));
                 ui.end_row();
@@ -939,7 +1102,7 @@ fn draw_shape_editor(ui: &mut Ui, shape: &mut SandboxShape) {
             });
         }
         ShapeKind::Ellipse => {
-            egui::Grid::new("ell_editor").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            egui::Grid::new(("ell_editor", sandbox_id)).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                 ui.label("cx:");
                 ui.add(egui::DragValue::new(&mut shape.ell_cx).speed(1.0));
                 ui.end_row();
@@ -955,7 +1118,7 @@ fn draw_shape_editor(ui: &mut Ui, shape: &mut SandboxShape) {
             });
         }
         ShapeKind::Trapezoid => {
-            egui::Grid::new("trap_editor").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            egui::Grid::new(("trap_editor", sandbox_id)).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                 ui.label("y_top:");
                 ui.add(egui::DragValue::new(&mut shape.trap_y_top).speed(1));
                 ui.end_row();
@@ -977,7 +1140,7 @@ fn draw_shape_editor(ui: &mut Ui, shape: &mut SandboxShape) {
             });
         }
         ShapeKind::Column => {
-            egui::Grid::new("col_editor").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            egui::Grid::new(("col_editor", sandbox_id)).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
                 ui.label("x:");
                 ui.add(egui::DragValue::new(&mut shape.col_x).speed(1));
                 ui.end_row();
@@ -1011,7 +1174,7 @@ fn draw_shape_editor(ui: &mut Ui, shape: &mut SandboxShape) {
     });
 }
 
-fn draw_combine_detail(ui: &mut Ui, comb: &CombineNode, shapes: &[SandboxShape]) {
+fn draw_combine_detail(ui: &mut Ui, comb: &CombineNode, shapes: &[SandboxShape], sandbox_id: usize) {
     let left_label = shapes.get(comb.left).map(|s| s.label.as_str()).unwrap_or("?");
     let right_label = shapes.get(comb.right).map(|s| s.label.as_str()).unwrap_or("?");
 
@@ -1021,7 +1184,7 @@ fn draw_combine_detail(ui: &mut Ui, comb: &CombineNode, shapes: &[SandboxShape])
     ));
     ui.add_space(4.0);
 
-    egui::Grid::new("combine_detail").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+    egui::Grid::new(("combine_detail", sandbox_id)).num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
         ui.label("运算:");
         ui.monospace(comb.op.label());
         ui.end_row();
