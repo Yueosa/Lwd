@@ -48,11 +48,13 @@ impl PhaseAlgorithm for MyAlgorithm {
             description: "示例生成阶段".into(),
             steps: vec![
                 StepMeta {
+                    display_index: 1,
                     name: "初始化".into(),
                     description: "准备数据".into(),
                     doc_url: None,
                 },
                 StepMeta {
+                    display_index: 2,
                     name: "填充".into(),
                     description: "填充方块".into(),
                     doc_url: None,
