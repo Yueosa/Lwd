@@ -44,6 +44,7 @@ fn biome_overlay_image(
 ///
 /// 对于分布在世界两侧的环境（如海洋），会检测不连续区域并分别标注。
 /// 每个区域独立计算 avg_y，避免跨区域平均导致文字错位。
+/// 包含碰撞检测：如果标签重叠则尝试偏移，偏移后仍重叠则跳过小区域标签。
 fn draw_biome_labels(
     painter: &egui::Painter,
     biome_map: &BiomeMap,
@@ -73,6 +74,14 @@ fn draw_biome_labels(
     // 间隔阈值：如果连续采样列之间的间距超过此值，视为两个独立区域
     let gap_threshold = w / 5;
 
+    // 第一阶段：收集所有候选标签 (pos, text, region_size)
+    struct LabelCandidate {
+        pos: Pos2,
+        text: String,
+        region_size: u64,
+    }
+    let mut candidates: Vec<LabelCandidate> = Vec::new();
+
     for (bid, points) in &sample_map {
         let bdef = match biome_definitions.iter().find(|d| d.id == *bid) {
             Some(d) => d,
@@ -83,7 +92,7 @@ fn draw_biome_labels(
         let mut sorted_points = points.clone();
         sorted_points.sort_unstable_by_key(|&(x, _)| x);
 
-        // 按 x 间隔切分成独立区域，同时收集每个区域的 (x_min, x_max, sum_y, count)
+        // 按 x 间隔切分成独立区域
         struct Region {
             x_min: u32,
             x_max: u32,
@@ -110,21 +119,76 @@ fn draw_biome_labels(
         }
         regions.push(cur);
 
-        // 在每个区域的中心放置标签
         for region in &regions {
             let cx = ((region.x_min + region.x_max) as f32 / 2.0) * zoom + image_rect.left();
             let cy = (region.sum_y as f32 / region.count as f32) * zoom + image_rect.top();
             let pos = Pos2::new(cx, cy);
             if image_rect.contains(pos) {
-                painter.text(
+                candidates.push(LabelCandidate {
                     pos,
-                    egui::Align2::CENTER_CENTER,
-                    &bdef.name,
-                    egui::FontId::proportional(14.0),
-                    Color32::WHITE,
-                );
+                    text: bdef.name.clone(),
+                    region_size: region.count,
+                });
             }
         }
+    }
+
+    // 按区域大小降序排列（大区域优先放置）
+    candidates.sort_by(|a, b| b.region_size.cmp(&a.region_size));
+
+    // 第二阶段：逐个放置，碰撞检测
+    let font = egui::FontId::proportional(14.0);
+    let mut placed_rects: Vec<Rect> = Vec::new();
+    let label_padding = 4.0_f32;
+
+    for candidate in &candidates {
+        // 估算文字包围盒
+        let galley = painter.layout_no_wrap(candidate.text.clone(), font.clone(), Color32::WHITE);
+        let text_size = galley.size();
+        let half_w = text_size.x / 2.0 + label_padding;
+        let half_h = text_size.y / 2.0 + label_padding;
+
+        let make_rect = |pos: Pos2| -> Rect {
+            Rect::from_min_max(
+                Pos2::new(pos.x - half_w, pos.y - half_h),
+                Pos2::new(pos.x + half_w, pos.y + half_h),
+            )
+        };
+
+        let overlaps = |r: &Rect| -> bool {
+            placed_rects.iter().any(|pr| pr.intersects(*r))
+        };
+
+        // 尝试多个偏移位置：原位 → 上/下/左/右 → 对角线
+        let base = candidate.pos;
+        let dy_step = text_size.y + 6.0;
+        let dx_step = text_size.x * 0.6 + 6.0;
+        let offsets: [(f32, f32); 7] = [
+            (0.0,     0.0),      // 原位
+            (0.0,     -dy_step), // 上移
+            (0.0,      dy_step), // 下移
+            (-dx_step, 0.0),     // 左移
+            ( dx_step, 0.0),     // 右移
+            (-dx_step, -dy_step),// 左上
+            ( dx_step, -dy_step),// 右上
+        ];
+        let mut placed = false;
+        for &(dx, dy) in &offsets {
+            let pos = Pos2::new(base.x + dx, base.y + dy);
+            if !image_rect.contains(pos) {
+                continue;
+            }
+            let r = make_rect(pos);
+            if !overlaps(&r) {
+                painter.text(pos, egui::Align2::CENTER_CENTER, &candidate.text, font.clone(), Color32::WHITE);
+                placed_rects.push(r);
+                placed = true;
+                break;
+            }
+        }
+
+        // 如果所有位置都冲突，跳过此标签（小区域的标签被舍弃）
+        let _ = placed;
     }
 }
 
