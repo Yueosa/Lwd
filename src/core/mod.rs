@@ -1,6 +1,7 @@
 pub mod biome;
 pub mod block;
 pub mod color;
+pub mod geometry;
 pub mod layer;
 pub mod world;
 
