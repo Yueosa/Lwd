@@ -20,6 +20,9 @@
 - **存档系统** — `.lwd` 快照导出/导入（只存 seed + params，不存方块）
 - **PNG 导出** — 1:1 像素导出世界图像
 - **覆盖层可视化** — 环境覆盖色/文字、层级分界线/文字，4 项独立开关
+- **几何图形 API** — Shape trait + 4 种基础形状 + Union/Intersect/Subtract 组合器
+- **几何预览窗口** — 展示当前步骤的所有几何形状（mini-canvas + 形状列表 + 详细参数）
+- **图形 API 沙箱** — 多实例交互式形状创建/组合/预览，支持集合运算 + 代码生成
 - **粉蓝白主题** — 全局统一配色方案
 - **启动画面** — ASCII 艺术 "LIANWORLD" 粉→蓝渐变展示
 - **缩略地图** — 画布右下角实时世界缩略图 + 视口指示器
@@ -48,9 +51,10 @@ cargo run --release
 
 ## 项目规模
 
-- ~4400 行 Rust 源码
-- ~30 个源文件
-- 43 种方块 / 6 种环境 / 3 种预设世界尺寸
+- ~7600 行 Rust 源码
+- ~33 个源文件
+- 43 种方块 / 10 种环境 / 3 种预设世界尺寸
+- 9 个生成步骤 / 4 种几何图形 / 3 种集合运算
 
 ## 文档导航
 
@@ -74,20 +78,28 @@ src/
 │   └── biome_division.rs
 ├── assets/           # 编译时嵌入资源
 │   ├── blocks.json   # 43 种方块定义
-│   ├── biome.json    # 6 种环境定义
+│   ├── biome.json    # 10 种环境定义
 │   ├── world.json    # 世界尺寸 + 层级配置
 │   └── fonts/        # 子集字体 (CJK + 符号)
 ├── config/           # 配置加载层
-├── core/             # 核心数据结构 (World, Block, Biome, Layer)
-├── generation/       # 生成引擎 (Pipeline, Algorithm trait, Snapshot)
+├── core/             # 核心数据结构
+│   ├── world.rs      # World, Block, Layer, Color
+│   ├── biome.rs      # BiomeMap (2D 环境网格)
+│   └── geometry.rs   # Shape trait + 组合器 + 填充函数
+├── generation/       # 生成引擎
+│   ├── pipeline.rs   # GenerationPipeline + 形状日志
+│   ├── algorithm.rs  # PhaseAlgorithm trait + RuntimeContext
+│   └── snapshot.rs   # WorldSnapshot + PNG 导出
 ├── rendering/        # 渲染工具 (世界→纹理, 颜色 LUT)
 ├── ui/               # GUI 模块
-│   ├── app.rs        # 主应用状态中枢
+│   ├── app.rs            # 主应用状态中枢
 │   ├── control_panel.rs  # 左侧控制面板
 │   ├── canvas_view.rs    # 画布 + 缩略地图
-│   ├── theme.rs      # 粉蓝白主题
-│   ├── splash.rs     # 启动画面
-│   └── ...           # 配置窗口、状态栏
+│   ├── geo_preview.rs    # 几何预览窗口
+│   ├── shape_sandbox.rs  # 图形 API 沙箱（多实例）
+│   ├── theme.rs          # 粉蓝白主题
+│   ├── splash.rs         # 启动画面
+│   └── ...               # 配置窗口、状态栏
 └── main.rs           # 入口
 docs/                 # 项目文档 (9 篇)
 ```
