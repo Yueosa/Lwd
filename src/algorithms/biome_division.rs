@@ -53,11 +53,10 @@ pub struct BiomeDivisionParams {
     pub desert_surface_top_limit: f64,
     pub desert_surface_bottom_limit: f64,
     pub desert_surface_min_spacing: f64,
-    pub desert_underground_count: u32,
-    pub desert_underground_width_ratio: f64,
-    pub desert_underground_top_limit: f64,
-    pub desert_underground_bottom_limit: f64,
-    pub desert_underground_depth_factor: f64,
+    pub desert_true_count: u32,
+    pub desert_true_top_limit: f64,
+    pub desert_true_bottom_limit: f64,
+    pub desert_true_depth_factor: f64,
     
     // TODO: 其他步骤参数
 }
@@ -82,15 +81,14 @@ impl Default for BiomeDivisionParams {
             snow_center_offset_range: 0.12,
             desert_surface_count: 3,
             desert_surface_width_min: 0.025,
-            desert_surface_width_max: 0.06,
+            desert_surface_width_max: 0.05,
             desert_surface_top_limit: 0.10,
             desert_surface_bottom_limit: 0.40,
             desert_surface_min_spacing: 0.15,
-            desert_underground_count: 1,
-            desert_underground_width_ratio: 0.08,
-            desert_underground_top_limit: 0.30,
-            desert_underground_bottom_limit: 0.85,
-            desert_underground_depth_factor: 0.70,
+            desert_true_count: 1,
+            desert_true_top_limit: 0.30,
+            desert_true_bottom_limit: 0.85,
+            desert_true_depth_factor: 0.90,
         }
     }
 }
@@ -352,48 +350,73 @@ impl BiomeDivisionAlgorithm {
         Ok(())
     }
 
-    /// 4. 沙漠生成 — 在世界空白区域随机生成沙漠地表和地下沙漠
+    /// 4. 沙漠生成 — 在世界空白区域随机生成沙漠地表和真沙漠
     fn step_desert(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
         let desert_surface_id = self.get_biome_id("desert")
             .ok_or("未找到 desert 环境定义")?;
-        let desert_underground_id = self.get_biome_id("desert_underground")
-            .ok_or("未找到 desert_underground 环境定义")?;
+        let desert_true_id = self.get_biome_id("desert_true")
+            .ok_or("未找到 desert_true 环境定义")?;
         
         let bm = ctx.biome_map.as_mut().ok_or("需先执行海洋生成")?;
         let w = bm.width as i32;
         let h = bm.height as i32;
-        let world_center_x = w / 2;
         
         use rand::Rng;
         
-        // === 第一阶段：生成多个沙漠地表（矩形） ===
+        // === 第一阶段：扫描空白区域 ===
+        
+        // 在地表层中间高度扫描，找出所有连续的 UNASSIGNED 区段
+        let scan_y = (h as f64 * (self.params.desert_surface_top_limit + self.params.desert_surface_bottom_limit) / 2.0) as u32;
+        let mut empty_ranges: Vec<(i32, i32)> = Vec::new(); // (start_x, end_x)
+        let mut range_start: Option<i32> = None;
+        
+        for x in 0..w {
+            if bm.get(x as u32, scan_y) == BIOME_UNASSIGNED {
+                if range_start.is_none() {
+                    range_start = Some(x);
+                }
+            } else if let Some(start) = range_start {
+                empty_ranges.push((start, x));
+                range_start = None;
+            }
+        }
+        if let Some(start) = range_start {
+            empty_ranges.push((start, w));
+        }
+        
+        // === 第二阶段：在空白区域中随机放置沙漠地表（矩形） ===
         
         let surface_count = self.params.desert_surface_count;
         let mut desert_positions: Vec<(i32, i32)> = Vec::new(); // (x_center, width)
         
-        // 计算可用空间范围（排除已有环境的核心区域）
-        let forest_half = (w as f64 * self.params.forest_width_ratio) as i32;
-        let excluded_left = world_center_x - forest_half - (w as f64 * 0.05) as i32;
-        let excluded_right = world_center_x + forest_half + (w as f64 * 0.05) as i32;
-        
-        // 尝试随机放置沙漠地表
         let mut attempts = 0;
-        while desert_positions.len() < surface_count as usize && attempts < surface_count * 10 {
+        while desert_positions.len() < surface_count as usize && attempts < surface_count * 20 {
             attempts += 1;
             
-            // 随机生成宽度和位置
+            // 随机生成宽度
             let width_ratio = ctx.rng.gen_range(self.params.desert_surface_width_min..=self.params.desert_surface_width_max);
             let width = (w as f64 * width_ratio) as i32;
             let half_width = width / 2;
             
-            // 随机选择中心点（避开中心森林区域）
-            let center_x = if ctx.rng.gen_bool(0.5) {
-                // 左侧区域
-                ctx.rng.gen_range(half_width..(excluded_left - half_width).max(half_width + 1))
-            } else {
-                // 右侧区域
-                ctx.rng.gen_range((excluded_right + half_width)..(w - half_width).max(excluded_right + half_width + 1))
-            };
+            // 从空白区段中随机选一个足够宽的区段
+            let valid_ranges: Vec<_> = empty_ranges.iter()
+                .filter(|&&(s, e)| e - s >= width)
+                .collect();
+            
+            if valid_ranges.is_empty() {
+                break;
+            }
+            
+            let range_idx = ctx.rng.gen_range(0..valid_ranges.len());
+            let &(range_start, range_end) = valid_ranges[range_idx];
+            
+            // 在区段内随机选择中心点
+            let min_cx = range_start + half_width;
+            let max_cx = range_end - half_width;
+            if min_cx >= max_cx {
+                continue;
+            }
+            let center_x = ctx.rng.gen_range(min_cx..max_cx);
             
             // 检查与已有沙漠的间距
             let min_spacing = (w as f64 * self.params.desert_surface_min_spacing) as i32;
@@ -404,6 +427,18 @@ impl BiomeDivisionAlgorithm {
                 if distance < required_spacing {
                     valid = false;
                     break;
+                }
+            }
+            
+            // 验证宽度范围内全部为 UNASSIGNED
+            if valid {
+                let x_left = (center_x - half_width).max(0);
+                let x_right = (center_x + half_width).min(w);
+                for x in x_left..x_right {
+                    if bm.get(x as u32, scan_y) != BIOME_UNASSIGNED {
+                        valid = false;
+                        break;
+                    }
                 }
             }
             
@@ -430,56 +465,131 @@ impl BiomeDivisionAlgorithm {
             }
         }
         
-        // === 第二阶段：生成沙漠地下（椭圆） ===
+        // === 第三阶段：生成真沙漠（互相避让，只画在分界线以下） ===
+        //
+        // 核心原则：
+        //   1. 真沙漠只画在分界线（地表沙漠底部）以下，不吞噬地表沙漠
+        //   2. 严格只在 UNASSIGNED 格子上绘制，与所有环境互相避让
+        //   3. 选位优先离世界中心最近，但跳过地下可用空间不足的候选
         
         if desert_positions.is_empty() {
             return Ok(());
         }
         
-        // 选择离世界中心最近的 N 个沙漠地表
-        let mut positions_with_distance: Vec<_> = desert_positions.iter()
-            .map(|&(x, w)| (x, w, (x - world_center_x).abs()))
-            .collect();
-        positions_with_distance.sort_by_key(|&(_, _, dist)| dist);
+        let true_count = (self.params.desert_true_count as usize).min(desert_positions.len());
+        if true_count == 0 {
+            return Ok(());
+        }
         
-        let underground_count = (self.params.desert_underground_count as usize).min(positions_with_distance.len());
+        // 分界线（地表沙漠底部）— 真沙漠只画在此线以下
+        let junction_y = h as f64 * self.params.desert_surface_bottom_limit;
+        let junction_y_int = junction_y.ceil() as i32;
         
-        for i in 0..underground_count {
-            let (center_x, _, _) = positions_with_distance[i];
+        // 椭圆的垂直范围（整个椭圆的数学定义，用于计算 rx）
+        let true_top = h as f64 * self.params.desert_true_top_limit;
+        let true_bottom = h as f64 * self.params.desert_true_bottom_limit * self.params.desert_true_depth_factor;
+        let cy = (true_top + true_bottom) / 2.0;
+        let ry = (true_bottom - true_top) / 2.0;
+        
+        if ry <= 0.0 {
+            return Ok(());
+        }
+        
+        let world_center_x = w / 2;
+        
+        // 对每个候选地表沙漠，计算 rx 和地下区域可用空间
+        struct TrueDesertCandidate {
+            center_x: i32,
+            rx: f64,
+            score: usize,       // 分界线以下椭圆内可用格子数
+            total: usize,       // 分界线以下椭圆内总格子数
+            dist_to_center: i32,
+        }
+        let mut candidates: Vec<TrueDesertCandidate> = Vec::new();
+        
+        for &(center_x, surface_width) in &desert_positions {
+            let surface_half_width = surface_width as f64 / 2.0;
             
-            // 计算椭圆参数
-            let rx = (w as f64 * self.params.desert_underground_width_ratio / 2.0) as i32;
-            let cy = h / 2;
-            let ry = h / 2;
+            // 在分界线处，椭圆宽度 = 地表沙漠宽度 → 反推 rx
+            let dy = (junction_y - cy) / ry;
+            let dy_sq = dy * dy;
+            if dy_sq >= 1.0 {
+                continue;
+            }
+            let rx = surface_half_width / (1.0 - dy_sq).sqrt();
             
-            let top_y = (h as f64 * self.params.desert_underground_top_limit) as i32;
-            let bottom_y = (h as f64 * self.params.desert_underground_bottom_limit * self.params.desert_underground_depth_factor) as i32;
+            // 只采样分界线以下的椭圆区域（这才是真沙漠实际绘制区域）
+            let x0 = ((center_x as f64 - rx).floor().max(0.0)) as i32;
+            let x1 = ((center_x as f64 + rx).ceil().min(w as f64)) as i32;
+            let y0 = junction_y_int;
+            let y1 = (true_bottom.ceil().min(h as f64)) as i32;
             
-            // 绘制椭圆（覆盖地表沙漠）
-            let x0 = (center_x - rx).max(0);
-            let x1 = (center_x + rx).min(w);
-            let y0 = (cy - ry).max(0);
-            let y1 = (cy + ry).min(h);
+            let sample_step = 4;
+            let mut score: usize = 0;
+            let mut total: usize = 0;
+            
+            let mut sy = y0;
+            while sy < y1 {
+                let mut sx = x0;
+                while sx < x1 {
+                    let dxe = (sx - center_x) as f64 / rx;
+                    let dye = (sy as f64 - cy) / ry;
+                    if dxe * dxe + dye * dye <= 1.0 {
+                        total += 1;
+                        let cid = bm.get(sx as u32, sy as u32);
+                        if cid == BIOME_UNASSIGNED {
+                            score += 1;
+                        }
+                    }
+                    sx += sample_step;
+                }
+                sy += sample_step;
+            }
+            
+            candidates.push(TrueDesertCandidate {
+                center_x,
+                rx,
+                score,
+                total,
+                dist_to_center: (center_x - world_center_x).abs(),
+            });
+        }
+        
+        // 按距离世界中心升序排列（优先选最近的）
+        candidates.sort_by_key(|c| c.dist_to_center);
+        
+        // 跳过可用空间不足 30% 的候选
+        let min_fill_ratio = 0.30;
+        
+        let mut placed = 0;
+        for cand in &candidates {
+            if placed >= true_count {
+                break;
+            }
+            
+            if cand.total > 0 && (cand.score as f64 / cand.total as f64) < min_fill_ratio {
+                continue;
+            }
+            
+            // 绘制椭圆——只画分界线以下，严格只填 UNASSIGNED
+            let x0 = ((cand.center_x as f64 - cand.rx).floor().max(0.0)) as i32;
+            let x1 = ((cand.center_x as f64 + cand.rx).ceil().min(w as f64)) as i32;
+            let y0 = junction_y_int;  // 从分界线开始，不碰地表沙漠
+            let y1 = (true_bottom.ceil().min(h as f64)) as i32;
             
             for y in y0..y1 {
-                // y 范围裁剪
-                if y < top_y || y >= bottom_y {
-                    continue;
-                }
-                
                 for x in x0..x1 {
-                    let current_id = bm.get(x as u32, y as u32);
-                    // 只在 UNASSIGNED 或 desert_surface 上写入
-                    if current_id == BIOME_UNASSIGNED || current_id == desert_surface_id {
-                        // 椭圆方程判定
-                        let dx = (x - center_x) as f64 / rx as f64;
-                        let dy = (y - cy) as f64 / ry as f64;
-                        if dx * dx + dy * dy <= 1.0 {
-                            bm.set(x as u32, y as u32, desert_underground_id);
+                    if bm.get(x as u32, y as u32) == BIOME_UNASSIGNED {
+                        let dxe = (x - cand.center_x) as f64 / cand.rx;
+                        let dye = (y as f64 - cy) / ry;
+                        if dxe * dxe + dye * dye <= 1.0 {
+                            bm.set(x as u32, y as u32, desert_true_id);
                         }
                     }
                 }
             }
+            
+            placed += 1;
         }
         
         Ok(())
@@ -686,7 +796,7 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     name: "沙漠地表最大宽度".to_string(),
                     description: "沙漠地表矩形最大宽度（相对世界宽度）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.06),
+                    default: serde_json::json!(0.05),
                     group: Some("沙漠生成".to_string()),
                 },
                 ParamDef {
@@ -714,43 +824,35 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     group: Some("沙漠生成".to_string()),
                 },
                 ParamDef {
-                    key: "desert_underground_count".to_string(),
-                    name: "地下沙漠数量".to_string(),
-                    description: "生成的地下沙漠（真沙漠）数量，选择离中心最近的地表".to_string(),
+                    key: "desert_true_count".to_string(),
+                    name: "真沙漠数量".to_string(),
+                    description: "生成的真沙漠数量，选择离中心最近的地表沙漠".to_string(),
                     param_type: ParamType::Int { min: 0, max: 5 },
                     default: serde_json::json!(1),
                     group: Some("沙漠生成".to_string()),
                 },
                 ParamDef {
-                    key: "desert_underground_width_ratio".to_string(),
-                    name: "地下沙漠宽度".to_string(),
-                    description: "地下沙漠椭圆宽度（相对世界宽度）".to_string(),
-                    param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.08),
-                    group: Some("沙漠生成".to_string()),
-                },
-                ParamDef {
-                    key: "desert_underground_top_limit".to_string(),
-                    name: "地下沙漠上边界".to_string(),
-                    description: "地下沙漠顶部边界（0.30=地下层顶）".to_string(),
+                    key: "desert_true_top_limit".to_string(),
+                    name: "真沙漠上边界".to_string(),
+                    description: "真沙漠椭圆顶部（0.30=地下层顶）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
                     default: serde_json::json!(0.30),
                     group: Some("沙漠生成".to_string()),
                 },
                 ParamDef {
-                    key: "desert_underground_bottom_limit".to_string(),
-                    name: "地下沙漠下边界".to_string(),
-                    description: "地下沙漠底部边界基准（0.85=洞穴层底）".to_string(),
+                    key: "desert_true_bottom_limit".to_string(),
+                    name: "真沙漠下边界".to_string(),
+                    description: "真沙漠底部边界基准（0.85=洞穴层底）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
                     default: serde_json::json!(0.85),
                     group: Some("沙漠生成".to_string()),
                 },
                 ParamDef {
-                    key: "desert_underground_depth_factor".to_string(),
-                    name: "地下沙漠深度因子".to_string(),
-                    description: "控制地下沙漠向下延伸深度（实际深度 = 下边界 × 深度因子）".to_string(),
+                    key: "desert_true_depth_factor".to_string(),
+                    name: "真沙漠深度因子".to_string(),
+                    description: "控制真沙漠向下延伸深度（实际深度 = 下边界 × 深度因子）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.70),
+                    default: serde_json::json!(0.90),
                     group: Some("沙漠生成".to_string()),
                 },
             ],
