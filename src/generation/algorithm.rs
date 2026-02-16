@@ -52,6 +52,9 @@ pub struct ParamDef {
     pub param_type: ParamType,
     /// 默认值（JSON 值）
     pub default: serde_json::Value,
+    /// 参数分组名称（用于 UI 折叠分组，None 表示不分组）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// 单个子步骤的元数据

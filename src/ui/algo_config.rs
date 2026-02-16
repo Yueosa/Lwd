@@ -1,10 +1,12 @@
 //! 算法参数配置窗口
 //!
 //! 根据算法模块的 `PhaseMeta.params` 自动生成 UI 控件。
+//! 参数按 `ParamDef.group` 分组，以可折叠面板呈现。
 
 use egui::{Context, Ui};
 
 use crate::generation::algorithm::{ParamDef, ParamType, PhaseAlgorithm, PhaseMeta};
+use crate::ui::theme;
 
 /// 算法配置窗口的返回值
 pub struct AlgoConfigResult {
@@ -28,7 +30,7 @@ pub fn show_algo_config_window(
     egui::Window::new(format!("⚙ {} — 参数配置", meta.name))
         .open(open)
         .resizable(true)
-        .default_width(340.0)
+        .default_width(360.0)
         .show(ctx, |ui| {
             if meta.params.is_empty() {
                 ui.label("此算法模块没有可调参数。");
@@ -38,9 +40,11 @@ pub fn show_algo_config_window(
             ui.label(&meta.description);
             ui.separator();
 
-            for param_def in &meta.params {
-                changed |= render_param(ui, param_def, &mut params);
-            }
+            egui::ScrollArea::vertical()
+                .max_height(ui.available_height() - 40.0)
+                .show(ui, |ui| {
+                    changed |= render_grouped_params(ui, &meta, &mut params);
+                });
 
             ui.separator();
 
@@ -70,6 +74,68 @@ pub fn show_algo_config_window(
         changed,
         replay_requested: replay,
     }
+}
+
+/// 将参数按 group 分组渲染，有 group 的用 CollapsingHeader，无 group 的直接渲染。
+fn render_grouped_params(
+    ui: &mut Ui,
+    meta: &PhaseMeta,
+    params: &mut serde_json::Value,
+) -> bool {
+    let mut changed = false;
+
+    // 收集分组顺序（保持首次出现顺序）
+    let mut group_order: Vec<Option<String>> = Vec::new();
+    for p in &meta.params {
+        let g = p.group.clone();
+        if !group_order.contains(&g) {
+            group_order.push(g);
+        }
+    }
+
+    for group in &group_order {
+        let group_params: Vec<&ParamDef> = meta
+            .params
+            .iter()
+            .filter(|p| &p.group == group)
+            .collect();
+
+        match group {
+            None => {
+                // 无分组的参数直接渲染
+                for param_def in &group_params {
+                    changed |= render_param(ui, param_def, params);
+                }
+            }
+            Some(group_name) => {
+                // 有分组的参数用可折叠面板
+                let id = ui.make_persistent_id(group_name);
+                egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    id,
+                    false,
+                )
+                .show_header(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong(group_name);
+                        ui.colored_label(
+                            theme::TEXT_MUTED,
+                            format!("({} 个参数)", group_params.len()),
+                        );
+                    });
+                })
+                .body(|ui| {
+                    ui.indent(group_name, |ui| {
+                        for param_def in &group_params {
+                            changed |= render_param(ui, param_def, params);
+                        }
+                    });
+                });
+            }
+        }
+    }
+
+    changed
 }
 
 /// 根据 ParamDef 的类型渲染对应的 UI 控件，返回是否发生了修改。
