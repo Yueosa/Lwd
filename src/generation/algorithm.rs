@@ -60,6 +60,8 @@ pub struct ParamDef {
 /// 单个子步骤的元数据
 #[derive(Debug, Clone)]
 pub struct StepMeta {
+    /// 子步骤显示编号（如 1、2…，由算法自行定义）
+    pub display_index: u32,
     /// 子步骤名称
     pub name: String,
     /// 子步骤描述
@@ -141,7 +143,7 @@ pub struct RuntimeContext<'a> {
 ///             name: "我的算法".to_string(),
 ///             description: "示例算法".to_string(),
 ///             steps: vec![
-///                 StepMeta { name: "步骤1".into(), description: "...".into(), doc_url: None },
+///                 StepMeta { display_index: 1, name: "步骤1".into(), description: "...".into(), doc_url: None },
 ///             ],
 ///             params: vec![],
 ///         }
