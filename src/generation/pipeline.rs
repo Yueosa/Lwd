@@ -124,13 +124,15 @@ impl GenerationPipeline {
         self.current_phase >= self.algorithms.len()
     }
 
-    /// 当前步骤的显示 ID (如 "1.0", "2.1")
+    /// 当前步骤的显示 ID (如 "1.1", "1.2")
     pub fn current_step_display_id(&self) -> Option<String> {
         if self.current_phase >= self.algorithms.len() {
             return None;
         }
         if self.current_sub < self.step_counts[self.current_phase] {
-            Some(format!("{}.{}", self.current_phase + 1, self.current_sub))
+            let meta = self.algorithms[self.current_phase].meta();
+            let display_idx = meta.steps[self.current_sub].display_index;
+            Some(format!("{}.{}", self.current_phase + 1, display_idx))
         } else {
             None
         }
