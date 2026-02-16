@@ -4,7 +4,10 @@
 
 </div>
 
-![dashboard](./lwd.png)
+| | |
+|-|-|
+| ![dashboard](./lwd.png) | ![biome](./biome.png) |
+| ![ing](./ing.png) | ![shabox](./shabox.png) |
 
 > 受 Terraria 启发的 2D 世界生成可视化工具 — 用于研究、调试和演示程序化世界生成算法。
 
