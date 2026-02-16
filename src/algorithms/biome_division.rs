@@ -52,13 +52,8 @@ impl Default for BiomeDivisionParams {
 // ═══════════════════════════════════════════════════════════
 
 pub struct BiomeDivisionAlgorithm {
-    /// 各种 biome 的 ID（从 biome_definitions 查表得到）
-    ocean_id: BiomeId,
-    forest_id: BiomeId,
-    jungle_id: BiomeId,
-    snow_id: BiomeId,
-    desert_id: BiomeId,
-    crimson_id: BiomeId,
+    /// 环境定义列表（用于运行时动态查找）
+    biome_definitions: Vec<BiomeDefinition>,
     /// 可调参数
     params: BiomeDivisionParams,
 }
@@ -66,20 +61,23 @@ pub struct BiomeDivisionAlgorithm {
 impl BiomeDivisionAlgorithm {
     pub fn new(biome_definitions: &[BiomeDefinition]) -> Self {
         Self {
-            ocean_id: biome_id_by_key(biome_definitions, "ocean").unwrap_or(1),
-            forest_id: biome_id_by_key(biome_definitions, "forest").unwrap_or(2),
-            desert_id: biome_id_by_key(biome_definitions, "desert").unwrap_or(3),
-            snow_id: biome_id_by_key(biome_definitions, "snow").unwrap_or(4),
-            jungle_id: biome_id_by_key(biome_definitions, "jungle").unwrap_or(5),
-            crimson_id: biome_id_by_key(biome_definitions, "crimson").unwrap_or(6),
+            biome_definitions: biome_definitions.to_vec(),
             params: BiomeDivisionParams::default(),
         }
+    }
+    
+    /// 辅助方法：根据 key 查找 biome ID
+    fn get_biome_id(&self, key: &str) -> Option<BiomeId> {
+        biome_id_by_key(&self.biome_definitions, key)
     }
 
     // ── 各子步骤实现 ────────────────────────────────────────
 
     /// 0. 海洋生成 — 在世界两侧生成海洋区域
     fn step_ocean(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
+        let ocean_id = self.get_biome_id("ocean")
+            .ok_or("未找到 ocean 环境定义")?;
+        
         let w = ctx.world.width;
         let h = ctx.world.height;
         
@@ -93,17 +91,20 @@ impl BiomeDivisionAlgorithm {
         
         // 左侧海洋
         let left_width = (w as f64 * self.params.ocean_left_width) as u32;
-        bm.fill_rect(0, y_top, left_width, y_bottom, self.ocean_id);
+        bm.fill_rect(0, y_top, left_width, y_bottom, ocean_id);
         
         // 右侧海洋
         let right_width = (w as f64 * self.params.ocean_right_width) as u32;
-        bm.fill_rect(w - right_width, y_top, w, y_bottom, self.ocean_id);
+        bm.fill_rect(w - right_width, y_top, w, y_bottom, ocean_id);
         
         Ok(())
     }
 
     /// 1. 森林生成 — 在世界中心地表层生成矩形森林
     fn step_forest(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
+        let forest_id = self.get_biome_id("forest")
+            .ok_or("未找到 forest 环境定义")?;
+        
         let bm = ctx.biome_map.as_mut().ok_or("需先执行海洋生成")?;
         let w = bm.width;
         let h = bm.height;
@@ -122,7 +123,7 @@ impl BiomeDivisionAlgorithm {
         for y in y_top..y_bottom {
             for x in x_left..x_right {
                 if bm.get(x, y) == BIOME_UNASSIGNED {
-                    bm.set(x, y, self.forest_id);
+                    bm.set(x, y, forest_id);
                 }
             }
         }
