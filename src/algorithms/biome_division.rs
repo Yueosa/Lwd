@@ -65,6 +65,9 @@ pub struct BiomeDivisionParams {
     pub crimson_top_limit: f64,
     pub crimson_bottom_limit: f64,
     pub crimson_min_spacing: f64,
+    
+    // 森林填充
+    pub forest_fill_merge_threshold: u32,
 }
 
 impl Default for BiomeDivisionParams {
@@ -101,6 +104,7 @@ impl Default for BiomeDivisionParams {
             crimson_top_limit: 0.10,
             crimson_bottom_limit: 0.40,
             crimson_min_spacing: 0.15,
+            forest_fill_merge_threshold: 100,
         }
     }
 }
@@ -167,9 +171,9 @@ impl BiomeDivisionAlgorithm {
         let w = bm.width;
         let h = bm.height;
         
-        // 地表层范围：10% - 30%（world.json定义）
+        // 地表层 + 地下层范围：10% - 40%
         let y_top = (h as f64 * 0.10) as u32;
-        let y_bottom = (h as f64 * 0.30) as u32;
+        let y_bottom = (h as f64 * 0.40) as u32;
         
         // 水平中心区域：从中心向两侧延伸
         let center_x = w / 2;
@@ -795,9 +799,135 @@ impl BiomeDivisionAlgorithm {
         Ok(())
     }
 
-    /// 6. 森林填充 — 将所有剩余空白区块变成森林（占位符）
-    fn step_forest_fill(&self, _ctx: &mut RuntimeContext) -> Result<(), String> {
-        // TODO: 实现森林填充逻辑
+    /// 6. 森林填充 — 沙漠/猩红近距离扩散 + 剩余空白填森林
+    ///
+    /// 算法流程：
+    ///   阶段 1：在 y=25% 扫描线判断沙漠/猩红左右是否有窄空隙（< 阈值）
+    ///           记录需要扩散的方向（左/右）和对应环境 ID
+    ///   阶段 2：对需要扩散的沙漠/猩红，逐行(y=10%..40%)从边缘
+    ///           向外逐像素填充 UNASSIGNED，直到碰到非空像素
+    ///           （自动适配梯形腰/椭圆弧等不规则边界）
+    ///   阶段 3：剩余 UNASSIGNED 填充为森林（仅地表+地下层）
+    fn step_forest_fill(&self, ctx: &mut RuntimeContext) -> Result<(), String> {
+        let forest_id = self.get_biome_id("forest")
+            .ok_or("未找到 forest 环境定义")?;
+        let desert_surface_id = self.get_biome_id("desert")
+            .ok_or("未找到 desert 环境定义")?;
+        let crimson_id = self.get_biome_id("crimson")
+            .ok_or("未找到 crimson 环境定义")?;
+        
+        let bm = ctx.biome_map.as_mut().ok_or("需先执行海洋生成")?;
+        let w = bm.width as i32;
+        let h = bm.height as i32;
+        
+        let threshold = self.params.forest_fill_merge_threshold as i32;
+        
+        let layer_top = (h as f64 * 0.10) as i32;
+        let layer_bottom = (h as f64 * 0.40).min(h as f64) as i32;
+        
+        let can_expand = |bid: BiomeId| -> bool {
+            bid == desert_surface_id || bid == crimson_id
+        };
+        
+        // ── 阶段 1：在 y=25% 扫描，判断哪些沙漠/猩红需要扩散 ──
+        let scan_y = (h as f64 * 0.25) as u32;
+        
+        struct Seg {
+            biome: BiomeId,
+            start: i32,
+            end: i32,
+        }
+        let mut segs: Vec<Seg> = Vec::new();
+        {
+            let mut sx = 0i32;
+            while sx < w {
+                let bid = bm.get(sx as u32, scan_y);
+                let seg_start = sx;
+                while sx < w && bm.get(sx as u32, scan_y) == bid {
+                    sx += 1;
+                }
+                segs.push(Seg { biome: bid, start: seg_start, end: sx });
+            }
+        }
+        
+        // 记录扩散任务：(沙漠/猩红区段的边缘x, 方向, biome_id)
+        // direction: -1=向左扩散, +1=向右扩散
+        struct ExpandTask {
+            edge_x: i32,    // 扩散起始边缘
+            direction: i32, // -1 向左, +1 向右
+            fill_id: BiomeId,
+        }
+        let mut tasks: Vec<ExpandTask> = Vec::new();
+        let seg_count = segs.len();
+        
+        for i in 0..seg_count {
+            if !can_expand(segs[i].biome) {
+                continue;
+            }
+            let fill_id = segs[i].biome;
+            
+            // 左侧空隙检查
+            if i >= 1 && segs[i - 1].biome == BIOME_UNASSIGNED {
+                let gap_width = segs[i - 1].end - segs[i - 1].start;
+                if gap_width < threshold {
+                    tasks.push(ExpandTask {
+                        edge_x: segs[i].start, // 沙漠/猩红的左边缘
+                        direction: -1,
+                        fill_id,
+                    });
+                }
+            }
+            
+            // 右侧空隙检查
+            if i + 1 < seg_count && segs[i + 1].biome == BIOME_UNASSIGNED {
+                let gap_width = segs[i + 1].end - segs[i + 1].start;
+                if gap_width < threshold {
+                    tasks.push(ExpandTask {
+                        edge_x: segs[i].end, // 沙漠/猩红的右边缘
+                        direction: 1,
+                        fill_id,
+                    });
+                }
+            }
+        }
+        
+        // ── 阶段 2：逐行从实际边缘向外扩散，直到碰到非空像素 ──
+        for task in &tasks {
+            for y in layer_top..layer_bottom {
+                // 从扫描线的 edge_x 向内搜索，找到该行实际的沙漠/猩红边缘
+                // 这样避免扫描线位置和实际边缘错位导致夹缝
+                let inward = -task.direction; // 向内方向
+                let mut actual_edge = task.edge_x;
+                // 先向内找到属于 fill_id 的像素
+                loop {
+                    if actual_edge < 0 || actual_edge >= w { break; }
+                    if bm.get(actual_edge as u32, y as u32) == task.fill_id {
+                        break;
+                    }
+                    actual_edge += inward;
+                }
+                // 从实际边缘向外扩散
+                let mut x = actual_edge;
+                loop {
+                    x += task.direction;
+                    if x < 0 || x >= w { break; }
+                    if bm.get(x as u32, y as u32) != BIOME_UNASSIGNED {
+                        break;
+                    }
+                    bm.set(x as u32, y as u32, task.fill_id);
+                }
+            }
+        }
+        
+        // ── 阶段 3：剩余空白填充为森林（仅地表+地下层）───
+        for y in layer_top..layer_bottom {
+            for x in 0..w {
+                if bm.get(x as u32, y as u32) == BIOME_UNASSIGNED {
+                    bm.set(x as u32, y as u32, forest_id);
+                }
+            }
+        }
+        
         Ok(())
     }
 }
@@ -1096,6 +1226,14 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
                     default: serde_json::json!(0.15),
                     group: Some("猩红生成".to_string()),
+                },
+                ParamDef {
+                    key: "forest_fill_merge_threshold".to_string(),
+                    name: "扩散阈值".to_string(),
+                    description: "沙漠/猩红边缘到邻居环境的空隙小于此像素数时，扩散填充而非生成森林".to_string(),
+                    param_type: ParamType::Int { min: 0, max: 500 },
+                    default: serde_json::json!(100),
+                    group: Some("森林填充".to_string()),
                 },
             ],
         }
