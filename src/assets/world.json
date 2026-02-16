@@ -41,12 +41,12 @@
         "cavern": {
             "start_percent": 35,
             "end_percent": 80,
-            "description": "洞穴层 - 占总高度的48%"
+            "description": "洞穴层 - 占总高度的45%"
         },
         "hell": {
             "start_percent": 80,
             "end_percent": 100,
-            "description": "地狱层 - 占总高度的17%"
+            "description": "地狱层 - 占总高度的20%"
         }
     }
 }
