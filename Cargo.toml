@@ -2,6 +2,8 @@
 name = "Lwd"
 version = "0.1.0"
 edition = "2024"
+description = "Lian World — Terraria 风格 2D 世界生成可视化工具"
+authors = ["Lian"]
 
 [dependencies]
 egui = "0.27"
@@ -12,3 +14,10 @@ rand = "0.8"
 image = "0.25"
 rfd = "0.15"
 noise = "0.9"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
