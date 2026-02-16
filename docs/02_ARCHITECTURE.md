@@ -7,33 +7,33 @@
   eframe::run_native()
   │
   ▼
-  ui/app.rs
-  LianWorldApp (状态中枢)
-  ├── ControlPanel    控制面板
+  ui/app.rs — LianWorldApp (状态中枢)
+  ├── ControlPanel    控制面板（步进/导出/配置）
   ├── CanvasView      画布视图 + 缩略地图
   ├── StatusBar       底部状态栏
-  ├── Splash          启动画面
+  ├── Splash          启动画面（ASCII 渐变）
   ├── AlgoConfig      算法参数配置窗口
   ├── LayerConfig     层级配置窗口
   ├── OverlayConfig   覆盖层配置窗口
-  └── Theme           粉蓝白主题
+  └── Theme           粉蓝白主题系统
   │
   ▼
   generation/ (引擎层)
-  ├── pipeline.rs      GenerationPipeline — 步进/回退/重放
+  ├── pipeline.rs      GenerationPipeline — 步进/回退/重放/缓存
   ├── algorithm.rs     PhaseAlgorithm trait + RuntimeContext
   └── snapshot.rs      WorldSnapshot / export_png
   │
   ▼
   algorithms/ (算法模块层)
   └── biome_division.rs   BiomeDivisionAlgorithm (Phase 1: 环境判定 — 7 子步骤)
+      (future: terrain_fill / cave_generation / ore_placement)
   │
   ▼
   core/ (数据层)
   ├── world.rs    World { width, height, tiles }
-  ├── biome.rs    BiomeMap (2D 环境网格)
+  ├── biome.rs    BiomeMap (2D 环境网格 + 几何操作)
   ├── block.rs    BlockDefinition
-  ├── layer.rs    LayerDefinition
+  ├── layer.rs    LayerDefinition + 百分比转行数
   └── color.rs    ColorRgba
   │
   ▼
@@ -54,7 +54,7 @@
 2. **生成**: `pipeline` 调度 `algorithm` → 修改 `World` + `BiomeMap`
 3. **渲染**: `World.tiles` → `color_lut` → `ColorImage` → egui 纹理
 4. **持久化**: 运行状态 → `WorldSnapshot` → `.lwd` JSON 文件
-5. **主题**: `theme.rs` 在启动时应用全局粉蓝白配色
+5. **主题**: `theme.rs` 启动时应用全局粉蓝白配色方案
 
 ## 文件清单
 
