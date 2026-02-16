@@ -17,10 +17,12 @@ use crate::ui::canvas_view::show_canvas;
 use crate::ui::control_panel::{show_control_panel, ControlAction, WorldSizeSelection};
 use crate::ui::layer_config::{show_layer_config_window, merge_runtime_field};
 use crate::ui::overlay_config::{show_overlay_config_window, OverlaySettings};
+use crate::ui::splash::show_splash;
 use crate::ui::status_bar::show_status_bar;
 use crate::ui::theme;
 
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansCJK-Regular.ttc");
+const SYMBOLS_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansSymbols2-Regular.ttf");
 
 /// 获取 runtime.json 的可靠路径（可执行文件同级目录下）
 pub fn runtime_json_path() -> std::path::PathBuf {
@@ -66,6 +68,8 @@ pub struct LianWorldApp {
     show_overlay_config: bool,
     show_layer_config: bool,
     show_algo_config: bool,
+    /// 是否已经开始过生成（用于控制 splash 显示）
+    has_started_generation: bool,
     /// 手动种子输入框的文本内容
     seed_input: String,
 }
@@ -128,6 +132,7 @@ impl LianWorldApp {
             show_overlay_config: false,
             show_layer_config: false,
             show_algo_config: false,
+            has_started_generation: false,
             seed_input: String::new(),
         };
 
@@ -415,15 +420,27 @@ impl LianWorldApp {
 
 fn setup_chinese_font(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("cjk".to_owned(), FontData::from_static(CJK_FONT_BYTES));
 
+    // 符号字体 — 覆盖 Geometric Shapes / Dingbats / Technical / Arrows 等
+    fonts.font_data.insert(
+        "symbols".to_owned(),
+        FontData::from_static(SYMBOLS_FONT_BYTES),
+    );
+    // CJK 字体 — 覆盖中文 + 日韩
+    fonts.font_data.insert(
+        "cjk".to_owned(),
+        FontData::from_static(CJK_FONT_BYTES),
+    );
+
+    // fallback 顺序: egui 默认字体 → symbols → CJK
+    // 这样 Latin/符号先从默认字体查找，找不到再试 symbols，最后是 CJK
     if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
-        family.insert(0, "cjk".to_owned());
+        family.push("symbols".to_owned());
+        family.push("cjk".to_owned());
     }
     if let Some(family) = fonts.families.get_mut(&FontFamily::Monospace) {
-        family.insert(0, "cjk".to_owned());
+        family.push("symbols".to_owned());
+        family.push("cjk".to_owned());
     }
 
     ctx.set_fonts(fonts);
@@ -754,7 +771,19 @@ impl eframe::App for LianWorldApp {
 
         // ── central canvas ──
         egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(texture) = &self.texture {
+            // 检查是否有生成操作发生（任何步进/重置/run_all 都算）
+            if action.step_forward_sub || action.step_forward_phase
+                || action.step_backward_sub || action.step_backward_phase
+                || action.reset_and_step || action.run_all
+                || action.import_lwd
+            {
+                self.has_started_generation = true;
+            }
+
+            if !self.has_started_generation {
+                // 显示 splash 字符画
+                show_splash(ui);
+            } else if let Some(texture) = &self.texture {
                 let biome_map = self.pipeline.biome_map();
                 if let Some(hover) = show_canvas(
                     ui,

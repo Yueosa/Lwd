@@ -4,5 +4,6 @@ pub mod canvas_view;
 pub mod control_panel;
 pub mod layer_config;
 pub mod overlay_config;
+pub mod splash;
 pub mod status_bar;
 pub mod theme;

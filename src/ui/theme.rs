@@ -2,7 +2,7 @@
 //!
 //! 定义 Lian World 的粉蓝白配色方案，并提供一键应用到 egui Style 的函数。
 
-use egui::{Color32, Rounding, Stroke, Style, Visuals};
+use egui::{Color32, Rounding, Stroke, Visuals};
 
 // ═══════════════════════════════════════════════════════════
 // 调色板常量

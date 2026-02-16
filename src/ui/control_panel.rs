@@ -85,12 +85,13 @@ pub fn show_control_panel(
     let mut action = ControlAction::none();
 
     // ── 标题 ──
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     ui.with_layout(Layout::top_down(Align::Center), |ui| {
         ui.colored_label(theme::PINK, egui::RichText::new("✿ Lian World ✿").heading());
     });
-    ui.add_space(2.0);
+    ui.add_space(4.0);
     ui.separator();
+    ui.add_space(4.0);
 
     // ── 世界尺寸 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 世界尺寸");
@@ -98,7 +99,9 @@ pub fn show_control_panel(
     ui.radio_value(world_size, WorldSizeSelection::Medium, "中 (6400×1800)");
     ui.radio_value(world_size, WorldSizeSelection::Large, "大 (8400×2400)");
 
+    ui.add_space(2.0);
     ui.separator();
+    ui.add_space(4.0);
 
     // ── 种子输入 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 种子");
@@ -110,12 +113,14 @@ pub fn show_control_panel(
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             action.apply_seed = true;
         }
-        if ui.button("✓").on_hover_text("应用种子并重置到第0步").clicked() {
+        if ui.button("OK").on_hover_text("应用种子并重置到第0步").clicked() {
             action.apply_seed = true;
         }
     });
 
+    ui.add_space(2.0);
     ui.separator();
+    ui.add_space(4.0);
 
     // ── 生成进度（自定义粉蓝渐变进度条）──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 生成进度");
@@ -155,7 +160,9 @@ pub fn show_control_panel(
     
     ui.label(egui::RichText::new(format!("子步骤: {executed}/{total}")).color(theme::TEXT_SECONDARY).small());
 
+    ui.add_space(2.0);
     ui.separator();
+    ui.add_space(4.0);
 
     // ── 步进控制 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 步进控制");
@@ -198,7 +205,9 @@ pub fn show_control_panel(
         }
     });
 
+    ui.add_space(2.0);
     ui.separator();
+    ui.add_space(4.0);
 
     // ── 步骤列表 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 步骤列表");
@@ -236,7 +245,7 @@ pub fn show_control_panel(
                             resp.on_hover_ui(|ui| {
                                 ui.label(&sub.description);
                                 if let Some(url) = &sub.doc_url {
-                                    ui.hyperlink_to("📖 查看算法文档", url);
+                                    ui.hyperlink_to("[Doc] 查看算法文档", url);
                                 }
                             });
                         }
@@ -245,10 +254,13 @@ pub fn show_control_panel(
             }
         });
 
+    ui.add_space(4.0);
     ui.separator();
+    ui.add_space(6.0);
 
     // ── 生成操作 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 生成操作");
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
         if ui.button(egui::RichText::new("✦ 一键生成").color(theme::PINK_LIGHT))
             .on_hover_text("新种子 → 重置 → 执行全部步骤").clicked() {
@@ -260,6 +272,7 @@ pub fn show_control_panel(
             action.reset_and_step = true;
         }
     });
+    ui.add_space(2.0);
     if ui
         .add_enabled(executed < total, egui::Button::new(
             egui::RichText::new("▶▶ 执行到底").color(theme::WHITE)
@@ -269,32 +282,38 @@ pub fn show_control_panel(
     {
         action.run_all = true;
     }
-    
-    if ui.button(egui::RichText::new("⚙ 算法参数").color(theme::TEXT_SECONDARY))
+    ui.add_space(2.0);
+    if ui.button(egui::RichText::new("≡ 算法参数").color(theme::TEXT_SECONDARY))
         .on_hover_text("打开当前步骤的算法参数配置面板").clicked() {
         action.open_step_config = true;
     }
 
+    ui.add_space(4.0);
     ui.separator();
+    ui.add_space(6.0);
 
     // ── 导出 / 导入 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 导出 / 导入");
-    if ui.button(egui::RichText::new("🖼 导出 PNG").color(theme::TEXT_SECONDARY))
+    ui.add_space(2.0);
+    if ui.button(egui::RichText::new("▣ 导出 PNG").color(theme::TEXT_SECONDARY))
         .on_hover_text("将当前世界画面导出为 PNG 图片").clicked() {
         action.export_png = true;
     }
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
-        if ui.button(egui::RichText::new("💾 导出 .lwd").color(theme::TEXT_SECONDARY))
+        if ui.button(egui::RichText::new("□ 导出 .lwd").color(theme::TEXT_SECONDARY))
             .on_hover_text("保存世界快照").clicked() {
             action.export_lwd = true;
         }
-        if ui.button(egui::RichText::new("📂 导入 .lwd").color(theme::TEXT_SECONDARY))
+        if ui.button(egui::RichText::new("■ 导入 .lwd").color(theme::TEXT_SECONDARY))
             .on_hover_text("从存档恢复世界").clicked() {
             action.import_lwd = true;
         }
     });
 
+    ui.add_space(4.0);
     ui.separator();
+    ui.add_space(4.0);
 
     // ── 缩放 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 缩放");
@@ -305,21 +324,24 @@ pub fn show_control_panel(
         if ui.button(egui::RichText::new("－").color(theme::PINK_LIGHT)).clicked() {
             action.zoom_out = true;
         }
-        if ui.button(egui::RichText::new("⟲ 重置").color(theme::TEXT_SECONDARY)).clicked() {
+        if ui.button(egui::RichText::new("↺ 重置").color(theme::TEXT_SECONDARY)).clicked() {
             action.zoom_reset = true;
         }
     });
 
+    ui.add_space(4.0);
     ui.separator();
+    ui.add_space(4.0);
 
     // ── 配置 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 配置");
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
-        if ui.button(egui::RichText::new("👁 可视化").color(theme::PINK_LIGHT))
+        if ui.button(egui::RichText::new("◉ 可视化").color(theme::PINK_LIGHT))
             .on_hover_text("环境/层级覆盖色、文字、分界线开关").clicked() {
             action.open_overlay_config = true;
         }
-        if ui.button(egui::RichText::new("⚙ 层级").color(theme::BLUE_LIGHT))
+        if ui.button(egui::RichText::new("▧ 层级").color(theme::BLUE_LIGHT))
             .on_hover_text("编辑层级垂直分布").clicked() {
             action.open_layer_config = true;
         }

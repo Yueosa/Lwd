@@ -11,7 +11,8 @@ fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Lian Terraria World Generator")
-            .with_inner_size([1400.0, 860.0]),
+            .with_inner_size([1400.0, 860.0])
+            .with_app_id("lian-world"),
         ..Default::default()
     };
 
