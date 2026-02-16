@@ -11,7 +11,6 @@ pub struct BiomeConfig {
     pub key: String,
     pub name: String,
     pub overlay_color: [u8; 4],
-    pub generation_weight: u32,
     pub description: String,
 }
 
