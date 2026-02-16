@@ -33,6 +33,84 @@
 use super::biome::{BiomeId, BiomeMap};
 
 // ═══════════════════════════════════════════════════════════
+// 形状记录（用于几何预览窗口）
+// ═══════════════════════════════════════════════════════════
+
+/// 形状参数（可序列化，用于重建形状）
+#[derive(Debug, Clone)]
+pub enum ShapeParams {
+    Rect { x0: i32, y0: i32, x1: i32, y1: i32 },
+    Ellipse { cx: f64, cy: f64, rx: f64, ry: f64 },
+    Trapezoid { y_top: i32, y_bot: i32, top_x0: f64, top_x1: f64, bot_x0: f64, bot_x1: f64 },
+    Column { x: i32, y_start: i32, y_end: i32 },
+    /// 组合形状（交集/并集/差集），仅保存 bbox + 类型名，不可重建
+    Composite { description: String },
+}
+
+impl ShapeParams {
+    /// 从 Rect 构造
+    pub fn from_rect(r: &Rect) -> Self {
+        ShapeParams::Rect { x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1 }
+    }
+    /// 从 Ellipse 构造
+    pub fn from_ellipse(e: &Ellipse) -> Self {
+        ShapeParams::Ellipse { cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry }
+    }
+    /// 从 Trapezoid 构造
+    pub fn from_trapezoid(t: &Trapezoid) -> Self {
+        ShapeParams::Trapezoid {
+            y_top: t.y_top, y_bot: t.y_bot,
+            top_x0: t.top_x0, top_x1: t.top_x1,
+            bot_x0: t.bot_x0, bot_x1: t.bot_x1,
+        }
+    }
+    /// 从 Column 构造
+    pub fn from_column(c: &Column) -> Self {
+        ShapeParams::Column { x: c.x, y_start: c.y_start, y_end: c.y_end }
+    }
+
+    /// 形状类型标签
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            ShapeParams::Rect { .. } => "矩形",
+            ShapeParams::Ellipse { .. } => "椭圆",
+            ShapeParams::Trapezoid { .. } => "梯形",
+            ShapeParams::Column { .. } => "列",
+            ShapeParams::Composite { .. } => "组合",
+        }
+    }
+
+    /// 数学描述字符串
+    pub fn math_description(&self) -> String {
+        match self {
+            ShapeParams::Rect { x0, y0, x1, y1 } =>
+                format!("x∈[{x0},{x1}), y∈[{y0},{y1})"),
+            ShapeParams::Ellipse { cx, cy, rx, ry } =>
+                format!("(x-{cx:.0})²/{rx:.0}² + (y-{cy:.0})²/{ry:.0}² ≤ 1"),
+            ShapeParams::Trapezoid { y_top, y_bot, top_x0, top_x1, bot_x0, bot_x1 } =>
+                format!("y∈[{y_top},{y_bot}), 上[{top_x0:.0},{top_x1:.0}), 下[{bot_x0:.0},{bot_x1:.0})"),
+            ShapeParams::Column { x, y_start, y_end } =>
+                format!("x={x}, y∈[{y_start},{y_end})"),
+            ShapeParams::Composite { description } =>
+                description.clone(),
+        }
+    }
+}
+
+/// 一条形状使用记录（每次 fill 操作产生一条）
+#[derive(Debug, Clone)]
+pub struct ShapeRecord {
+    /// 人类可读标签（如 "太空层", "左侧海洋", "真沙漠椭圆"）
+    pub label: String,
+    /// 包围盒（用于快速绘制轮廓）
+    pub bbox: BoundingBox,
+    /// 预览颜色 [r, g, b, a]
+    pub color: [u8; 4],
+    /// 形状参数（可用于重建形状或显示数学公式）
+    pub params: ShapeParams,
+}
+
+// ═══════════════════════════════════════════════════════════
 // 核心 Trait
 // ═══════════════════════════════════════════════════════════
 

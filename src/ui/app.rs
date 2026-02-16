@@ -15,8 +15,10 @@ use crate::rendering::viewport::ViewportState;
 use crate::ui::algo_config::show_algo_config_window;
 use crate::ui::canvas_view::show_canvas;
 use crate::ui::control_panel::{show_control_panel, ControlAction, WorldSizeSelection};
+use crate::ui::geo_preview::{show_geo_preview_window, GeoPreviewState};
 use crate::ui::layer_config::{show_layer_config_window, merge_runtime_field};
 use crate::ui::overlay_config::{show_overlay_config_window, OverlaySettings};
+use crate::ui::shape_sandbox::{show_shape_sandbox_window, ShapeSandboxState};
 use crate::ui::splash::show_splash;
 use crate::ui::status_bar::show_status_bar;
 use crate::ui::theme;
@@ -68,6 +70,14 @@ pub struct LianWorldApp {
     show_overlay_config: bool,
     show_layer_config: bool,
     show_algo_config: bool,
+    /// 是否显示几何预览窗口
+    show_geo_preview: bool,
+    /// 几何预览窗口状态
+    geo_preview_state: GeoPreviewState,
+    /// 是否显示图形 API 沙箱窗口
+    show_shape_sandbox: bool,
+    /// 图形 API 沙箱状态
+    shape_sandbox_state: ShapeSandboxState,
     /// 是否已经开始过生成（用于控制 splash 显示）
     has_started_generation: bool,
     /// 手动种子输入框的文本内容
@@ -132,6 +142,10 @@ impl LianWorldApp {
             show_overlay_config: false,
             show_layer_config: false,
             show_algo_config: false,
+            show_geo_preview: false,
+            geo_preview_state: GeoPreviewState::default(),
+            show_shape_sandbox: false,
+            shape_sandbox_state: ShapeSandboxState::default(),
             has_started_generation: false,
             seed_input: String::new(),
         };
@@ -606,6 +620,16 @@ impl eframe::App for LianWorldApp {
             self.show_algo_config = true;
         }
 
+        // ── geo preview ──
+        if action.open_geo_preview {
+            self.show_geo_preview = true;
+        }
+
+        // ── shape sandbox ──
+        if action.open_shape_sandbox {
+            self.show_shape_sandbox = true;
+        }
+
         // ── overlay config window ──
         if action.open_overlay_config {
             self.show_overlay_config = true;
@@ -669,6 +693,39 @@ impl eframe::App for LianWorldApp {
         // ── layer config window ──
         if action.open_layer_config {
             self.show_layer_config = true;
+        }
+
+        // ── geo preview window ──
+        if self.show_geo_preview {
+            let executed = self.pipeline.executed_sub_steps();
+            let step_label = if executed > 0 {
+                self.pipeline.last_executed_name().unwrap_or_default()
+            } else {
+                "未执行".to_string()
+            };
+            let shapes = if executed > 0 {
+                self.pipeline.shape_log(executed - 1).unwrap_or(&[])
+            } else {
+                &[]
+            };
+            show_geo_preview_window(
+                ctx,
+                &mut self.show_geo_preview,
+                &step_label,
+                shapes,
+                &mut self.geo_preview_state,
+                (self.world.width, self.world.height),
+            );
+        }
+
+        // ── shape sandbox window ──
+        if self.show_shape_sandbox {
+            show_shape_sandbox_window(
+                ctx,
+                &mut self.show_shape_sandbox,
+                &mut self.shape_sandbox_state,
+                (self.world.width, self.world.height),
+            );
         }
         
         if self.show_layer_config {

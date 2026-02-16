@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::biome::{BiomeDefinition, BiomeId, BiomeMap, BIOME_UNASSIGNED};
-use crate::core::geometry::{self, Ellipse, Rect, Shape, ShapeCombine, Trapezoid};
+use crate::core::geometry::{self, Ellipse, Rect, Shape, ShapeCombine, ShapeParams, ShapeRecord, Trapezoid};
 use crate::generation::algorithm::{
     ParamDef, ParamType, PhaseAlgorithm, PhaseMeta, RuntimeContext, StepMeta,
 };
@@ -133,6 +133,14 @@ impl BiomeDivisionAlgorithm {
     fn get_biome_id(&self, key: &str) -> Option<BiomeId> {
         biome_id_by_key(&self.biome_definitions, key)
     }
+    
+    /// 辅助方法：根据 biome ID 获取 overlay_color
+    fn biome_color(&self, id: BiomeId) -> [u8; 4] {
+        self.biome_definitions.iter()
+            .find(|b| b.id == id)
+            .map(|b| b.overlay_color)
+            .unwrap_or([128, 128, 128, 120])
+    }
 
     // ── 各子步骤实现 ────────────────────────────────────────
 
@@ -152,11 +160,25 @@ impl BiomeDivisionAlgorithm {
         
         // 太空层：0% ~ 10%
         let space_bottom = (h as f64 * 0.10) as i32;
-        geometry::fill_biome(&Rect::new(0, 0, w, space_bottom), bm, space_id);
+        let space_rect = Rect::new(0, 0, w, space_bottom);
+        geometry::fill_biome(&space_rect, bm, space_id);
+        ctx.shape_log.push(ShapeRecord {
+            label: "太空层".into(),
+            bbox: space_rect.bounding_box(),
+            color: self.biome_color(space_id),
+            params: ShapeParams::from_rect(&space_rect),
+        });
         
         // 地狱层：85% ~ 100%
         let hell_top = (h as f64 * 0.85) as i32;
-        geometry::fill_biome(&Rect::new(0, hell_top, w, h), bm, hell_id);
+        let hell_rect = Rect::new(0, hell_top, w, h);
+        geometry::fill_biome(&hell_rect, bm, hell_id);
+        ctx.shape_log.push(ShapeRecord {
+            label: "地狱层".into(),
+            bbox: hell_rect.bounding_box(),
+            color: self.biome_color(hell_id),
+            params: ShapeParams::from_rect(&hell_rect),
+        });
         
         Ok(())
     }
@@ -175,11 +197,25 @@ impl BiomeDivisionAlgorithm {
         
         // 左侧海洋
         let left_width = (w as f64 * self.params.ocean_left_width) as i32;
-        geometry::fill_biome(&Rect::new(0, y_top, left_width, y_bottom), bm, ocean_id);
+        let left_rect = Rect::new(0, y_top, left_width, y_bottom);
+        geometry::fill_biome(&left_rect, bm, ocean_id);
+        ctx.shape_log.push(ShapeRecord {
+            label: "左侧海洋".into(),
+            bbox: left_rect.bounding_box(),
+            color: self.biome_color(ocean_id),
+            params: ShapeParams::from_rect(&left_rect),
+        });
         
         // 右侧海洋
         let right_width = (w as f64 * self.params.ocean_right_width) as i32;
-        geometry::fill_biome(&Rect::new(w - right_width, y_top, w, y_bottom), bm, ocean_id);
+        let right_rect = Rect::new(w - right_width, y_top, w, y_bottom);
+        geometry::fill_biome(&right_rect, bm, ocean_id);
+        ctx.shape_log.push(ShapeRecord {
+            label: "右侧海洋".into(),
+            bbox: right_rect.bounding_box(),
+            color: self.biome_color(ocean_id),
+            params: ShapeParams::from_rect(&right_rect),
+        });
         
         Ok(())
     }
@@ -203,6 +239,12 @@ impl BiomeDivisionAlgorithm {
             center_x + half_width, y_bottom,
         );
         geometry::fill_biome_if(&shape, bm, forest_id, |c| c == BIOME_UNASSIGNED);
+        ctx.shape_log.push(ShapeRecord {
+            label: "中心森林".into(),
+            bbox: shape.bounding_box(),
+            color: self.biome_color(forest_id),
+            params: ShapeParams::from_rect(&shape),
+        });
         
         Ok(())
     }
@@ -269,9 +311,16 @@ impl BiomeDivisionAlgorithm {
             jungle_cx as f64, jungle_cy as f64,
             jungle_rx as f64, jungle_ry as f64,
         );
+        let ell_params = ShapeParams::from_ellipse(&ell);
         let clip = Rect::new(0, top_y, w, bottom_y);
         let shape = ell.intersect(clip);
         geometry::fill_biome_if(&shape, bm, jungle_id, |c| c == BIOME_UNASSIGNED);
+        ctx.shape_log.push(ShapeRecord {
+            label: "丛林".into(),
+            bbox: shape.bounding_box(),
+            color: self.biome_color(jungle_id),
+            params: ell_params,
+        });
         
         Ok(())
     }
@@ -339,6 +388,12 @@ impl BiomeDivisionAlgorithm {
             (snow_cx + bottom_half_width) as f64,
         );
         geometry::fill_biome_if(&shape, bm, snow_id, |c| c == BIOME_UNASSIGNED);
+        ctx.shape_log.push(ShapeRecord {
+            label: "雪原".into(),
+            bbox: shape.bounding_box(),
+            color: self.biome_color(snow_id),
+            params: ShapeParams::from_trapezoid(&shape),
+        });
         
         Ok(())
     }
@@ -582,12 +637,24 @@ impl BiomeDivisionAlgorithm {
             // 绘制地表沙漠矩形 —— geometry API
             let surface_rect = Rect::new(xl, surface_top_y, xr, surface_bottom_y.min(h));
             geometry::fill_biome_if(&surface_rect, bm, desert_surface_id, |c| c == BIOME_UNASSIGNED);
+            ctx.shape_log.push(ShapeRecord {
+                label: format!("地表沙漠 #{}", slot_data.len() + 1),
+                bbox: surface_rect.bounding_box(),
+                color: self.biome_color(desert_surface_id),
+                params: ShapeParams::from_rect(&surface_rect),
+            });
             
             // 绘制真沙漠完整椭圆（覆写其内部的地表沙漠）—— geometry API
             if slot.has_true {
                 let ell = Ellipse::new(slot.center_x as f64, ell_cy, slot.rx, ell_ry);
                 geometry::fill_biome_if(&ell, bm, desert_true_id, |c| {
                     c == BIOME_UNASSIGNED || c == desert_surface_id
+                });
+                ctx.shape_log.push(ShapeRecord {
+                    label: "真沙漠椭圆".into(),
+                    bbox: ell.bounding_box(),
+                    color: self.biome_color(desert_true_id),
+                    params: ShapeParams::from_ellipse(&ell),
                 });
                 true_slot_data.push((slot.center_x, slot.width));
             }
@@ -708,13 +775,19 @@ impl BiomeDivisionAlgorithm {
         }
         
         // 一次性绘制 —— geometry API
-        for slot in &slots {
+        for (i, slot) in slots.iter().enumerate() {
             let half_width = slot.width / 2;
             let xl = (slot.center_x - half_width).max(0);
             let xr = (slot.center_x + half_width).min(w);
             
             let rect = Rect::new(xl, surface_top_y, xr, surface_bottom_y.min(h));
             geometry::fill_biome_if(&rect, bm, crimson_id, |c| c == BIOME_UNASSIGNED);
+            ctx.shape_log.push(ShapeRecord {
+                label: format!("猩红 #{}", i + 1),
+                bbox: rect.bounding_box(),
+                color: self.biome_color(crimson_id),
+                params: ShapeParams::from_rect(&rect),
+            });
         }
         
         Ok(())
@@ -865,6 +938,12 @@ impl BiomeDivisionAlgorithm {
         // ── 阶段 3：剩余空白填充为森林（仅地表+地下层）—— geometry API
         let fill_rect = Rect::new(0, layer_top, w, layer_bottom);
         geometry::fill_biome_if(&fill_rect, bm, forest_id, |c| c == BIOME_UNASSIGNED);
+        ctx.shape_log.push(ShapeRecord {
+            label: "森林填充区域".into(),
+            bbox: fill_rect.bounding_box(),
+            color: self.biome_color(forest_id),
+            params: ShapeParams::from_rect(&fill_rect),
+        });
         
         Ok(())
     }
@@ -882,6 +961,12 @@ impl BiomeDivisionAlgorithm {
         
         let world_rect = Rect::new(0, 0, w, h);
         geometry::fill_biome_if(&world_rect, bm, stone_id, |c| c == BIOME_UNASSIGNED);
+        ctx.shape_log.push(ShapeRecord {
+            label: "地块填充".into(),
+            bbox: world_rect.bounding_box(),
+            color: self.biome_color(stone_id),
+            params: ShapeParams::from_rect(&world_rect),
+        });
         
         Ok(())
     }

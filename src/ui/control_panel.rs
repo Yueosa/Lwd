@@ -24,6 +24,10 @@ pub struct ControlAction {
     pub open_layer_config: bool,
     /// 打开当前步骤的算法配置面板
     pub open_step_config: bool,
+    /// 打开几何预览窗口
+    pub open_geo_preview: bool,
+    /// 打开图形 API 沙箱窗口
+    pub open_shape_sandbox: bool,
     /// 导出 PNG
     pub export_png: bool,
     /// 导出 .lwd 存档
@@ -49,6 +53,8 @@ impl ControlAction {
             open_overlay_config: false,
             open_layer_config: false,
             open_step_config: false,
+            open_geo_preview: false,
+            open_shape_sandbox: false,
             export_png: false,
             export_lwd: false,
             import_lwd: false,
@@ -283,9 +289,20 @@ pub fn show_control_panel(
         action.run_all = true;
     }
     ui.add_space(2.0);
-    if ui.button(egui::RichText::new("≡ 算法参数").color(theme::TEXT_SECONDARY))
-        .on_hover_text("打开当前步骤的算法参数配置面板").clicked() {
-        action.open_step_config = true;
+    ui.horizontal(|ui| {
+        if ui.button(egui::RichText::new("≡ 算法参数").color(theme::TEXT_SECONDARY))
+            .on_hover_text("打开当前步骤的算法参数配置面板").clicked() {
+            action.open_step_config = true;
+        }
+        if ui.button(egui::RichText::new("📐 几何预览").color(theme::TEXT_SECONDARY))
+            .on_hover_text("查看当前步骤使用的几何图形").clicked() {
+            action.open_geo_preview = true;
+        }
+    });
+    ui.add_space(2.0);
+    if ui.button(egui::RichText::new("◈ 图形 API 沙箱").color(theme::BLUE_LIGHT))
+        .on_hover_text("交互式创建、组合和预览几何图形").clicked() {
+        action.open_shape_sandbox = true;
     }
 
     ui.add_space(4.0);

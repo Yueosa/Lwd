@@ -11,6 +11,7 @@ use rand::SeedableRng;
 
 use crate::core::biome::{BiomeDefinition, BiomeMap};
 use crate::core::block::BlockDefinition;
+use crate::core::geometry::ShapeRecord;
 use crate::core::world::{World, WorldProfile};
 
 use super::algorithm::{PhaseAlgorithm, RuntimeContext};
@@ -74,6 +75,8 @@ pub struct GenerationPipeline {
     /// 当前执行位置：指向下一个要执行的子步骤
     current_phase: usize,
     current_sub: usize,
+    /// 每个子步骤的形状记录（key = flat_index）
+    shape_logs: HashMap<usize, Vec<ShapeRecord>>,
     /// phase_info 缓存, 仅在步骤变化时重建
     cached_phase_info: Vec<PhaseInfo>,
     cached_phase_info_executed: usize,
@@ -92,6 +95,7 @@ impl GenerationPipeline {
             biome_definitions,
             current_phase: 0,
             current_sub: 0,
+            shape_logs: HashMap::new(),
             cached_phase_info: Vec::new(),
             cached_phase_info_executed: usize::MAX,
             phase_info_dirty: true,
@@ -162,6 +166,18 @@ impl GenerationPipeline {
         self.biome_map.as_ref()
     }
 
+    /// 获取指定子步骤的形状记录（flat_index）
+    pub fn shape_log(&self, flat_index: usize) -> Option<&[ShapeRecord]> {
+        self.shape_logs.get(&flat_index).map(|v| v.as_slice())
+    }
+
+    /// 获取最后执行的子步骤的形状记录
+    pub fn last_executed_shape_log(&self) -> Option<&[ShapeRecord]> {
+        let executed = self.executed_sub_steps();
+        if executed == 0 { return None; }
+        self.shape_log(executed - 1)
+    }
+
     pub fn current_phase_index(&self) -> usize {
         self.current_phase
     }
@@ -205,6 +221,7 @@ impl GenerationPipeline {
         let flat_index = self.executed_sub_steps();
         let step_seed = derive_step_seed(self.seed, flat_index, profile.size.width, profile.size.height);
         let mut rng = StdRng::seed_from_u64(step_seed);
+        let mut step_shapes: Vec<ShapeRecord> = Vec::new();
 
         let step_count = self.step_counts[self.current_phase];
 
@@ -216,6 +233,7 @@ impl GenerationPipeline {
             rng: &mut rng,
             biome_map: &mut self.biome_map,
             shared: &mut self.shared_state,
+            shape_log: &mut step_shapes,
         };
 
         self.algorithms[self.current_phase]
@@ -224,6 +242,9 @@ impl GenerationPipeline {
                 let meta = self.algorithms[self.current_phase].meta();
                 format!("{}: {e}", meta.name)
             })?;
+
+        // 保存此步骤的形状记录
+        self.shape_logs.insert(flat_index, step_shapes);
 
         // 推进位置
         self.current_sub += 1;
@@ -311,6 +332,7 @@ impl GenerationPipeline {
         self.current_sub = 0;
         self.biome_map = None;
         self.shared_state.clear();
+        self.shape_logs.clear();
         for algo in &mut self.algorithms {
             algo.on_reset();
         }

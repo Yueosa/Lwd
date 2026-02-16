@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::biome::{BiomeDefinition, BiomeMap};
 use crate::core::block::BlockDefinition;
+use crate::core::geometry::ShapeRecord;
 use crate::core::world::{World, WorldProfile};
 
 // ═══════════════════════════════════════════════════════════
@@ -120,6 +121,11 @@ pub struct RuntimeContext<'a> {
     ///     .and_then(|v| v.downcast_ref::<Vec<u32>>());
     /// ```
     pub shared: &'a mut HashMap<String, Box<dyn Any>>,
+    /// 几何形状记录日志
+    ///
+    /// 算法每次使用 geometry fill 系列函数后，应 push 一条 [`ShapeRecord`]
+    /// 到此 Vec，供几何预览窗口展示。Pipeline 在每步执行前会清空并在执行后存档。
+    pub shape_log: &'a mut Vec<ShapeRecord>,
 }
 
 // ═══════════════════════════════════════════════════════════
