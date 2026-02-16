@@ -82,6 +82,14 @@
 
 通过 `.with_app_id("lian-world")` 设置 Wayland WM_CLASS。
 
+### ~~几何操作耦合在 BiomeMap~~ ✅
+
+原先 `fill_rect` / `fill_ellipse` 等几何操作直接实现在 BiomeMap 上，导致职责不清、无法组合。现已重构为独立的几何 API（`geometry.rs`），形状与填充完全分离，支持 Union / Intersect / Subtract 组合。
+
+### ~~沙箱放大卡顿 + 摩尔纹~~ ✅
+
+原因：组合运算使用像素级采样（逐像素 `contains` + 逐个 `rect_filled`）。通过并集矢量化绘制 + 交集/差集自适应采样步长解决。
+
 ## 测试
 
 当前无自动化测试。
