@@ -11,3 +11,6 @@ generation.runtime.json
 *.md
 !README.md
 !docs/*.md
+
+# 图标
+*.ico
