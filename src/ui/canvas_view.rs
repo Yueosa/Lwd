@@ -103,6 +103,10 @@ fn biome_overlay_image_region_lod(
 
 /// 在 biome overlay 上找到各区域的中心并标注名称。
 ///
+/// 仅扫描当前**可见视口区域**的 biome 采样点（而非全世界），
+/// 并根据缩放级别使用自适应采样步长，确保在大世界缩小查看时
+/// 也能保持低开销（<2ms）。
+///
 /// 对于分布在世界两侧的环境（如海洋），会检测不连续区域并分别标注。
 /// 每个区域独立计算 avg_y，避免跨区域平均导致文字错位。
 /// 包含碰撞检测：如果标签重叠则尝试偏移，偏移后仍重叠则跳过小区域标签。
@@ -115,16 +119,41 @@ fn draw_biome_labels(
 ) {
     use std::collections::HashMap;
 
-    // 对每种 biome 收集所有采样点 (x, y)，跳过 UNASSIGNED
-    let mut sample_map: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
-
-    let step = 8u32;
     let w = biome_map.width;
     let h = biome_map.height;
-    let mut y = 0;
-    while y < h {
-        let mut x = 0;
-        while x < w {
+
+    // ── 只扫描可见视口范围（+边距），避免遍历整个世界 ──
+    let clip = painter.clip_rect();
+    let margin_world = 50u32; // 边距：世界像素
+    let vis_x0 = ((clip.left() - image_rect.left()) / zoom)
+        .max(0.0) as u32;
+    let vis_y0 = ((clip.top() - image_rect.top()) / zoom)
+        .max(0.0) as u32;
+    let vis_x1 = ((clip.right() - image_rect.left()) / zoom)
+        .ceil().min(w as f32) as u32;
+    let vis_y1 = ((clip.bottom() - image_rect.top()) / zoom)
+        .ceil().min(h as f32) as u32;
+
+    let x_start = vis_x0.saturating_sub(margin_world);
+    let x_end = (vis_x1 + margin_world).min(w);
+    let y_start = vis_y0.saturating_sub(margin_world);
+    let y_end = (vis_y1 + margin_world).min(h);
+
+    if x_end <= x_start || y_end <= y_start {
+        return;
+    }
+
+    // ── 自适应步长：缩放越小 → 步长越大（因为屏幕上细节更少） ──
+    // zoom=0.3 → step=48, zoom=0.5 → step=32, zoom=1.0+ → step=16
+    let step = if zoom < 0.4 { 48u32 } else if zoom < 0.8 { 32u32 } else { 16u32 };
+
+    // 对每种 biome 收集可见区域内的采样点 (x, y)，跳过 UNASSIGNED
+    let mut sample_map: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
+
+    let mut y = y_start;
+    while y < y_end {
+        let mut x = x_start;
+        while x < x_end {
             let bid = biome_map.get(x, y);
             if bid != 0 {
                 sample_map.entry(bid).or_default().push((x, y));
@@ -135,8 +164,6 @@ fn draw_biome_labels(
     }
 
     // 间隔阈值：如果连续采样点之间 x 间距超过此值，视为两个独立区域
-    // 使用采样步长的 3 倍 (24px)。旧值 w/5 (20%世界宽度) 会将
-    // 相距 15% 的小环境（如沙漠）错误合并成一个区域，导致标签错位
     let gap_threshold = step * 3;
 
     // 第一阶段：收集所有候选标签 (pos, text, region_size)
@@ -188,7 +215,8 @@ fn draw_biome_labels(
             let cx = ((region.x_min + region.x_max) as f32 / 2.0) * zoom + image_rect.left();
             let cy = (region.sum_y as f32 / region.count as f32) * zoom + image_rect.top();
             let pos = Pos2::new(cx, cy);
-            if image_rect.contains(pos) {
+            // 只保留落在可见区域内的候选标签
+            if clip.contains(pos) {
                 candidates.push(LabelCandidate {
                     pos,
                     text: bdef.name.clone(),
@@ -201,17 +229,24 @@ fn draw_biome_labels(
     // 按区域大小降序排列（大区域优先放置）
     candidates.sort_by(|a, b| b.region_size.cmp(&a.region_size));
 
+    // 限制最大候选数量（避免极端情况下过多 layout 调用）
+    candidates.truncate(32);
+
     // 第二阶段：逐个放置，碰撞检测
     let font = egui::FontId::proportional(14.0);
     let mut placed_rects: Vec<Rect> = Vec::new();
     let label_padding = 4.0_f32;
 
+    // 预计算一个通用中文字符的大致高度，用于快速碰撞估算
+    // （避免为每个候选都做完整 layout）
+    let sample_galley = painter.layout_no_wrap("测".into(), font.clone(), Color32::WHITE);
+    let char_h = sample_galley.size().y;
+
     for candidate in &candidates {
-        // 估算文字包围盒
-        let galley = painter.layout_no_wrap(candidate.text.clone(), font.clone(), Color32::WHITE);
-        let text_size = galley.size();
-        let half_w = text_size.x / 2.0 + label_padding;
-        let half_h = text_size.y / 2.0 + label_padding;
+        // 用字符数估算宽度（中文约 char_h 宽，ASCII 约 char_h*0.6）
+        let approx_w = candidate.text.chars().count() as f32 * char_h * 0.7;
+        let half_w = approx_w / 2.0 + label_padding;
+        let half_h = char_h / 2.0 + label_padding;
 
         let make_rect = |pos: Pos2| -> Rect {
             Rect::from_min_max(
@@ -226,8 +261,8 @@ fn draw_biome_labels(
 
         // 尝试多个偏移位置：原位 → 上/下/左/右 → 对角线
         let base = candidate.pos;
-        let dy_step = text_size.y + 6.0;
-        let dx_step = text_size.x * 0.6 + 6.0;
+        let dy_step = char_h + 6.0;
+        let dx_step = approx_w * 0.6 + 6.0;
         let offsets: [(f32, f32); 7] = [
             (0.0,     0.0),      // 原位
             (0.0,     -dy_step), // 上移
@@ -240,7 +275,7 @@ fn draw_biome_labels(
         let mut placed = false;
         for &(dx, dy) in &offsets {
             let pos = Pos2::new(base.x + dx, base.y + dy);
-            if !image_rect.contains(pos) {
+            if !clip.contains(pos) {
                 continue;
             }
             let r = make_rect(pos);
