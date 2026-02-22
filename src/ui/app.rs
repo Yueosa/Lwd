@@ -12,7 +12,7 @@ use crate::core::block::{build_block_definitions, BlockDefinition};
 use crate::core::world::{World, WorldProfile};
 use crate::generation::{build_pipeline, GenerationPipeline, WorldSnapshot, export_png,
     AdaptiveBatchSize, TextureUpdateThrottle};
-use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image};
+use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image, world_to_color_image_downsampled};
 use crate::rendering::viewport::ViewportState;
 use crate::storage::engine_config::EngineConfig;
 use crate::storage::runtime as app_runtime;
@@ -59,6 +59,10 @@ pub struct LianWorldApp {
     viewport: ViewportState,
     texture: Option<TextureHandle>,
     texture_dirty: bool,
+    /// true = 当前纹理是降采样预览版，需要在生成结束后重建全分辨率
+    texture_is_preview: bool,
+    /// 当前降采样倍率（1 = 全分辨率）
+    preview_factor: u32,
     biome_overlay_texture: Option<TextureHandle>,
 
     // ── UI ──
@@ -143,6 +147,8 @@ impl LianWorldApp {
             viewport: ViewportState::default(),
             texture,
             texture_dirty: false,
+            texture_is_preview: false,
+            preview_factor: 1,
             biome_overlay_texture: None,
             last_status: "世界初始化完成".to_string(),
             hover_status: String::new(),
@@ -199,11 +205,36 @@ impl LianWorldApp {
 
     // ── texture management ──────────────────────────────────
 
+    /// 根据世界大小计算预览降采样倍率
+    fn downsample_factor(&self) -> u32 {
+        let pixels = self.world.width as u64 * self.world.height as u64;
+        if pixels > 15_000_000 {
+            4 // 大世界 8400×2400 = 20M → 预览 2100×600
+        } else if pixels > 8_000_000 {
+            2 // 中世界 6400×1800 = 11.5M → 预览 3200×900
+        } else {
+            1 // 小世界全分辨率
+        }
+    }
+
     fn refresh_texture_if_dirty(&mut self, ctx: &egui::Context) {
         if !self.texture_dirty {
             return;
         }
-        let image = world_to_color_image(&self.world, &self.color_lut);
+
+        let image = if self.running_to_end && !self.pipeline.is_complete() {
+            // 生成进行中——使用降采样预览纹理
+            let factor = self.downsample_factor();
+            self.preview_factor = factor;
+            self.texture_is_preview = factor > 1;
+            world_to_color_image_downsampled(&self.world, &self.color_lut, factor)
+        } else {
+            // 空闲 / 单步 / 生成刚完成——全分辨率
+            self.preview_factor = 1;
+            self.texture_is_preview = false;
+            world_to_color_image(&self.world, &self.color_lut)
+        };
+
         self.texture = Some(ctx.load_texture(
             "world_texture",
             image,
@@ -212,6 +243,14 @@ impl LianWorldApp {
         // 同时失效 biome overlay（每次步骤执行后重建）
         self.biome_overlay_texture = None;
         self.texture_dirty = false;
+    }
+
+    /// 生成完成后，如果当前纹理是预览版，强制重建全分辨率
+    fn ensure_full_resolution_texture(&mut self, ctx: &egui::Context) {
+        if self.texture_is_preview {
+            self.texture_dirty = true;
+            self.refresh_texture_if_dirty(ctx);
+        }
     }
 
     // ── action dispatch ─────────────────────────────────────
@@ -659,8 +698,15 @@ fn is_leap(y: u64) -> bool {
 
 impl eframe::App for LianWorldApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 检测当前帧是否有缩放/滚动输入——如果在生成中缩放，跳过纹理更新
+        let is_zooming = ctx.input(|i| i.smooth_scroll_delta.y.abs() > 0.5);
+
         self.apply_world_size_change();
-        self.refresh_texture_if_dirty(ctx);
+
+        // 生成进行中 + 正在缩放 → 延迟纹理更新（避免帧率锯齿）
+        if !(self.running_to_end && is_zooming) {
+            self.refresh_texture_if_dirty(ctx);
+        }
 
         // ── left panel ──
         // 使用 pipeline 的缓存 phase_info（仅步骤变化时重建）
@@ -899,6 +945,10 @@ impl eframe::App for LianWorldApp {
                 if let Some(throttle) = &mut self.texture_throttle {
                     throttle.reset();
                 }
+
+                // 降采样预览 → 全分辨率
+                self.ensure_full_resolution_texture(ctx);
+
                 let report = self.pipeline.performance_report();
                 eprintln!("{report}");
 
@@ -915,7 +965,10 @@ impl eframe::App for LianWorldApp {
             ctx.request_repaint(); // 确保下一帧继续处理
         }
 
-        self.refresh_texture_if_dirty(ctx);
+        // 缩放时跳过纹理刷新（generation complete 除外，那个强制走 ensure_full_resolution）
+        if !(self.running_to_end && is_zooming) {
+            self.refresh_texture_if_dirty(ctx);
+        }
 
         // 如果 overlay 开关变化，保存 UI 状态
         if action.open_overlay_config {
