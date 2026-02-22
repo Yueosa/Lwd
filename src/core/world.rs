@@ -1,6 +1,7 @@
 use rayon::prelude::*;
 
 use crate::config::world::{WorldConfig, WorldSize};
+use crate::core::geometry::parallel_threshold;
 use crate::core::layer::{build_layers, LayerDefinition};
 use crate::core::CoreError;
 
@@ -78,7 +79,7 @@ impl World {
         let w = self.width as usize;
 
         let area = (xe - xs) * (ye - ys);
-        if area >= 50_000 {
+        if area >= parallel_threshold() as usize {
             // 并行填充
             self.tiles[ys * w..ye * w]
                 .par_chunks_mut(w)

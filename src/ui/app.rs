@@ -14,12 +14,15 @@ use crate::generation::{build_pipeline, GenerationPipeline, WorldSnapshot, expor
     AdaptiveBatchSize, TextureUpdateThrottle};
 use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image};
 use crate::rendering::viewport::ViewportState;
+use crate::storage::engine_config::EngineConfig;
+use crate::storage::runtime as app_runtime;
 use crate::ui::algo_config::show_algo_config_window;
 use crate::ui::canvas_view::show_canvas;
 use crate::ui::control_panel::{show_control_panel, ControlAction, WorldSizeSelection};
 use crate::ui::geo_preview::{show_geo_preview_window, GeoPreviewState};
-use crate::ui::layer_config::{show_layer_config_window, merge_runtime_field};
+use crate::ui::layer_config::show_layer_config_window;
 use crate::ui::overlay_config::{show_overlay_config_window, OverlaySettings};
+use crate::ui::perf_panel::show_perf_panel_window;
 use crate::ui::shape_sandbox::{show_shape_sandbox_window, ShapeSandboxState};
 use crate::ui::splash::show_splash;
 use crate::ui::status_bar::show_status_bar;
@@ -27,17 +30,6 @@ use crate::ui::theme;
 
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansCJKsc-Regular.otf");
 const SYMBOLS_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/NotoSansSymbols2-Regular.ttf");
-
-/// 获取 runtime.json 的可靠路径（可执行文件同级目录下）
-pub fn runtime_json_path() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            return dir.join("generation.runtime.json");
-        }
-    }
-    // fallback: 当前工作目录
-    std::path::PathBuf::from("generation.runtime.json")
-}
 
 pub struct LianWorldApp {
     // ── config (loaded once) ──
@@ -60,6 +52,8 @@ pub struct LianWorldApp {
     adaptive_batch: AdaptiveBatchSize,
     /// 智能纹理更新节流器
     texture_throttle: Option<TextureUpdateThrottle>,
+    /// 引擎调优配置
+    engine_config: EngineConfig,
 
     // ── rendering ──
     viewport: ViewportState,
@@ -86,12 +80,20 @@ pub struct LianWorldApp {
     has_started_generation: bool,
     /// 手动种子输入框的文本内容
     seed_input: String,
+    /// 是否显示性能面板
+    show_perf_panel: bool,
 }
 
 impl LianWorldApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_chinese_font(&cc.egui_ctx);
         theme::apply_theme(&cc.egui_ctx);
+
+        // 加载引擎配置（首次运行自动校准）
+        let mut engine_config = EngineConfig::load();
+        engine_config.ensure_calibrated();
+        // 将校准后的阈值应用到全局原子变量
+        crate::core::geometry::set_parallel_threshold(engine_config.parallel_pixel_threshold);
 
         let blocks_cfg = load_blocks_config().expect("blocks.json 加载失败");
         let biomes_cfg = load_biomes_config().expect("biome.json 加载失败");
@@ -135,8 +137,9 @@ impl LianWorldApp {
             world_profile,
             pipeline,
             running_to_end: false,
-            adaptive_batch: AdaptiveBatchSize::new(),
+            adaptive_batch: AdaptiveBatchSize::from_config(&engine_config),
             texture_throttle: None,
+            engine_config,
             viewport: ViewportState::default(),
             texture,
             texture_dirty: false,
@@ -153,6 +156,7 @@ impl LianWorldApp {
             next_sandbox_id: 0,
             has_started_generation: false,
             seed_input: String::new(),
+            show_perf_panel: false,
         };
 
         // 根据恢复的 world_size 切换
@@ -487,22 +491,17 @@ fn parse_seed_input(input: &str) -> Option<u64> {
     u64::from_str_radix(trimmed, 16).ok()
 }
 
-/// 从 generation.runtime.json 加载层级配置（如果存在）
+/// 从 runtime.json 加载层级配置（如果存在）
 fn load_runtime_layers(layers: &mut [crate::core::layer::LayerDefinition]) {
-    use std::fs;
-    
-    let runtime_path = runtime_json_path();
-    if let Ok(content) = fs::read_to_string(runtime_path) {
-        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(layers_obj) = config.get("layers").and_then(|v| v.as_object()) {
-                for layer in layers.iter_mut() {
-                    if let Some(layer_config) = layers_obj.get(&layer.key).and_then(|v| v.as_object()) {
-                        if let Some(start) = layer_config.get("start_percent").and_then(|v| v.as_u64()) {
-                            layer.start_percent = start as u8;
-                        }
-                        if let Some(end) = layer_config.get("end_percent").and_then(|v| v.as_u64()) {
-                            layer.end_percent = end as u8;
-                        }
+    if let Some(layers_val) = app_runtime::load_field("layers") {
+        if let Some(layers_obj) = layers_val.as_object() {
+            for layer in layers.iter_mut() {
+                if let Some(layer_config) = layers_obj.get(&layer.key).and_then(|v| v.as_object()) {
+                    if let Some(start) = layer_config.get("start_percent").and_then(|v| v.as_u64()) {
+                        layer.start_percent = start as u8;
+                    }
+                    if let Some(end) = layer_config.get("end_percent").and_then(|v| v.as_u64()) {
+                        layer.end_percent = end as u8;
                     }
                 }
             }
@@ -512,46 +511,41 @@ fn load_runtime_layers(layers: &mut [crate::core::layer::LayerDefinition]) {
 
 /// 从 runtime.json 加载 UI 状态 (world_size, overlay 开关)
 fn load_runtime_ui_state() -> (WorldSizeSelection, OverlaySettings) {
-    use std::fs;
-    
     let mut size = WorldSizeSelection::Small;
     let mut overlay = OverlaySettings::default();
     
-    let runtime_path = runtime_json_path();
-    if let Ok(content) = fs::read_to_string(runtime_path) {
-        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(ui) = config.get("ui").and_then(|v| v.as_object()) {
-                if let Some(s) = ui.get("world_size").and_then(|v| v.as_str()) {
-                    size = match s {
-                        "medium" => WorldSizeSelection::Medium,
-                        "large" => WorldSizeSelection::Large,
-                        _ => WorldSizeSelection::Small,
-                    };
-                }
-                if let Some(b) = ui.get("show_biome_color").and_then(|v| v.as_bool()) {
+    if let Some(ui_val) = app_runtime::load_field("ui") {
+        if let Some(ui) = ui_val.as_object() {
+            if let Some(s) = ui.get("world_size").and_then(|v| v.as_str()) {
+                size = match s {
+                    "medium" => WorldSizeSelection::Medium,
+                    "large" => WorldSizeSelection::Large,
+                    _ => WorldSizeSelection::Small,
+                };
+            }
+            if let Some(b) = ui.get("show_biome_color").and_then(|v| v.as_bool()) {
+                overlay.show_biome_color = b;
+            }
+            if let Some(b) = ui.get("show_biome_labels").and_then(|v| v.as_bool()) {
+                overlay.show_biome_labels = b;
+            }
+            if let Some(b) = ui.get("show_layer_lines").and_then(|v| v.as_bool()) {
+                overlay.show_layer_lines = b;
+            }
+            if let Some(b) = ui.get("show_layer_labels").and_then(|v| v.as_bool()) {
+                overlay.show_layer_labels = b;
+            }
+            // 兼容旧配置
+            if let Some(b) = ui.get("show_biome_overlay").and_then(|v| v.as_bool()) {
+                if !ui.contains_key("show_biome_color") {
                     overlay.show_biome_color = b;
-                }
-                if let Some(b) = ui.get("show_biome_labels").and_then(|v| v.as_bool()) {
                     overlay.show_biome_labels = b;
                 }
-                if let Some(b) = ui.get("show_layer_lines").and_then(|v| v.as_bool()) {
+            }
+            if let Some(b) = ui.get("show_layer_overlay").and_then(|v| v.as_bool()) {
+                if !ui.contains_key("show_layer_lines") {
                     overlay.show_layer_lines = b;
-                }
-                if let Some(b) = ui.get("show_layer_labels").and_then(|v| v.as_bool()) {
                     overlay.show_layer_labels = b;
-                }
-                // 兼容旧配置
-                if let Some(b) = ui.get("show_biome_overlay").and_then(|v| v.as_bool()) {
-                    if !ui.contains_key("show_biome_color") {
-                        overlay.show_biome_color = b;
-                        overlay.show_biome_labels = b;
-                    }
-                }
-                if let Some(b) = ui.get("show_layer_overlay").and_then(|v| v.as_bool()) {
-                    if !ui.contains_key("show_layer_lines") {
-                        overlay.show_layer_lines = b;
-                        overlay.show_layer_labels = b;
-                    }
                 }
             }
         }
@@ -581,10 +575,86 @@ fn save_runtime_ui_state(
         "show_layer_labels": overlay.show_layer_labels,
     });
     
-    if let Ok(config) = merge_runtime_field("ui", ui_state) {
-        let content = serde_json::to_string_pretty(&config).unwrap_or_default();
-        let _ = std::fs::write(runtime_json_path(), content);
+    let _ = app_runtime::merge_field("ui", ui_state);
+}
+
+/// 将性能分析数据持久化到日志文件
+fn save_perf_log(pipeline: &GenerationPipeline, world: &World) {
+    use crate::storage::perf_log::{PerfEntry, StepEntry};
+
+    let profiler = pipeline.profiler();
+    let steps: Vec<StepEntry> = profiler.all_steps_sorted().iter().map(|(idx, sp)| {
+        StepEntry {
+            index: *idx,
+            name: sp.name.clone(),
+            avg_ms: sp.avg_duration().as_secs_f64() * 1000.0,
+            min_ms: sp.min_duration.as_secs_f64() * 1000.0,
+            max_ms: sp.max_duration.as_secs_f64() * 1000.0,
+        }
+    }).collect();
+
+    let now = chrono_timestamp();
+    let entry = PerfEntry {
+        timestamp: now,
+        seed: format!("{:016X}", pipeline.seed()),
+        world_size: format!("{}x{}", world.width, world.height),
+        total_ms: profiler.total_generation_time().as_secs_f64() * 1000.0,
+        steps,
+    };
+
+    // 使用 EngineConfig 中的 max_files 设置
+    let cfg = EngineConfig::load();
+    crate::storage::perf_log::save_entry(&entry, cfg.perf_log_max_files);
+}
+
+/// 生成 YYYYMMDD_HHMMSS 格式的时间戳
+fn chrono_timestamp() -> String {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // 简单的 UTC 时间格式化
+    let secs_per_day = 86400u64;
+    let secs_per_hour = 3600u64;
+    let secs_per_min = 60u64;
+
+    let days = now / secs_per_day;
+    let time_of_day = now % secs_per_day;
+    let h = time_of_day / secs_per_hour;
+    let m = (time_of_day % secs_per_hour) / secs_per_min;
+    let s = time_of_day % secs_per_min;
+
+    // 从天数计算年月日（简化算法）
+    let (y, mo, d) = days_to_ymd(days);
+    format!("{y:04}{mo:02}{d:02}_{h:02}{m:02}{s:02}")
+}
+
+fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+    // 从 1970-01-01 算起
+    let mut y = 1970u64;
+    loop {
+        let year_days = if is_leap(y) { 366 } else { 365 };
+        if days < year_days { break; }
+        days -= year_days;
+        y += 1;
     }
+    let month_days: [u64; 12] = if is_leap(y) {
+        [31,29,31,30,31,30,31,31,30,31,30,31]
+    } else {
+        [31,28,31,30,31,30,31,31,30,31,30,31]
+    };
+    let mut mo = 1u64;
+    for &md in &month_days {
+        if days < md { break; }
+        days -= md;
+        mo += 1;
+    }
+    (y, mo, days + 1)
+}
+
+fn is_leap(y: u64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 impl eframe::App for LianWorldApp {
@@ -750,6 +820,27 @@ impl eframe::App for LianWorldApp {
             }
         }
 
+        // ── perf panel window ──
+        if action.open_perf_panel {
+            self.show_perf_panel = true;
+        }
+        if self.show_perf_panel {
+            let cfg_changed = show_perf_panel_window(
+                ctx,
+                &mut self.show_perf_panel,
+                &mut self.engine_config,
+                self.pipeline.profiler(),
+            );
+            if cfg_changed {
+                // 应用配置到运行中的组件
+                self.adaptive_batch.apply_config(&self.engine_config);
+                crate::core::geometry::set_parallel_threshold(
+                    self.engine_config.parallel_pixel_threshold,
+                );
+                self.engine_config.save();
+            }
+        }
+
         // ── dispatch actions ──
         self.handle_action(&action);
 
@@ -758,8 +849,8 @@ impl eframe::App for LianWorldApp {
         if self.running_to_end && !self.pipeline.is_complete() {
             // 确保纹理节流器已初始化
             if self.texture_throttle.is_none() {
-                self.texture_throttle = Some(TextureUpdateThrottle::new(
-                    self.world.width, self.world.height,
+                self.texture_throttle = Some(TextureUpdateThrottle::from_config(
+                    &self.engine_config, self.world.width, self.world.height,
                 ));
             }
 
@@ -810,6 +901,10 @@ impl eframe::App for LianWorldApp {
                 }
                 let report = self.pipeline.performance_report();
                 eprintln!("{report}");
+
+                // 持久化性能日志
+                save_perf_log(&self.pipeline, &self.world);
+
                 self.last_status = format!(
                     "全部步骤已完成 ({}/{}) — 总耗时 {:.1}ms",
                     self.pipeline.executed_sub_steps(),

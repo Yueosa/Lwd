@@ -31,8 +31,22 @@
 //! ```
 
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::biome::{BiomeId, BiomeMap};
+
+/// 全局可配置的并行化像素阈值（由 EngineConfig 在启动时设置）
+static PARALLEL_PIXEL_THRESHOLD: AtomicI64 = AtomicI64::new(50_000);
+
+/// 获取当前并行阈值
+pub fn parallel_threshold() -> i64 {
+    PARALLEL_PIXEL_THRESHOLD.load(Ordering::Relaxed)
+}
+
+/// 设置并行阈值（由 EngineConfig 初始化时调用）
+pub fn set_parallel_threshold(value: i64) {
+    PARALLEL_PIXEL_THRESHOLD.store(value, Ordering::Relaxed);
+}
 
 // ═══════════════════════════════════════════════════════════
 // 形状记录（用于几何预览窗口）
@@ -417,9 +431,6 @@ impl<T: Shape + Sized> ShapeCombine for T {}
 // 填充函数 —— 将形状应用到 BiomeMap
 // ═══════════════════════════════════════════════════════════
 
-/// 自动判断是否值得并行化的像素数阈值
-const PARALLEL_PIXEL_THRESHOLD: i64 = 50_000;
-
 /// 将形状填充到 BiomeMap（无条件覆写）
 ///
 /// 自动根据区域大小切换串行/并行路径。
@@ -431,7 +442,7 @@ pub fn fill_biome(shape: &dyn Shape, bm: &mut BiomeMap, biome: BiomeId) {
     let y1 = bb.y_max.min(bm.height as i32);
 
     let area = (x1 - x0) as i64 * (y1 - y0) as i64;
-    if area >= PARALLEL_PIXEL_THRESHOLD {
+    if area >= parallel_threshold() {
         fill_biome_parallel(shape, bm, biome, x0, y0, x1, y1);
     } else {
         fill_biome_serial(shape, bm, biome, x0, y0, x1, y1);
@@ -500,7 +511,7 @@ pub fn fill_biome_if(
     let y1 = bb.y_max.min(bm.height as i32);
 
     let area = (x1 - x0) as i64 * (y1 - y0) as i64;
-    if area >= PARALLEL_PIXEL_THRESHOLD {
+    if area >= parallel_threshold() {
         fill_biome_if_parallel(shape, bm, biome, &filter, x0, y0, x1, y1);
     } else {
         fill_biome_if_serial(shape, bm, biome, &filter, x0, y0, x1, y1);
@@ -569,7 +580,7 @@ pub fn shape_all_match(
     let data = bm.data();
     let w = bm.width as usize;
 
-    if area >= PARALLEL_PIXEL_THRESHOLD {
+    if area >= parallel_threshold() {
         // 并行按行检查，支持提前退出
         let ys: Vec<i32> = (0..).map(|i| y0 + i * step).take_while(|&y| y < y1).collect();
         ys.par_iter().all(|&y| {

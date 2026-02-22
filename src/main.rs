@@ -3,6 +3,7 @@ mod config;
 mod core;
 mod generation;
 mod rendering;
+mod storage;
 mod ui;
 
 use ui::app::LianWorldApp;

@@ -5,6 +5,7 @@ pub mod control_panel;
 pub mod geo_preview;
 pub mod layer_config;
 pub mod overlay_config;
+pub mod perf_panel;
 pub mod shape_sandbox;
 pub mod splash;
 pub mod status_bar;

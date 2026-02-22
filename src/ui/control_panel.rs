@@ -36,6 +36,8 @@ pub struct ControlAction {
     pub import_lwd: bool,
     /// 应用手动输入的种子
     pub apply_seed: bool,
+    /// 打开性能面板
+    pub open_perf_panel: bool,
 }
 
 impl ControlAction {
@@ -59,6 +61,7 @@ impl ControlAction {
             export_lwd: false,
             import_lwd: false,
             apply_seed: false,
+            open_perf_panel: false,
         }
     }
 }
@@ -361,6 +364,12 @@ pub fn show_control_panel(
         if ui.button(egui::RichText::new("▧ 层级").color(theme::BLUE_LIGHT))
             .on_hover_text("编辑层级垂直分布").clicked() {
             action.open_layer_config = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if ui.button(egui::RichText::new("⚙ 性能").color(theme::BLUE_LIGHT))
+            .on_hover_text("引擎性能调优 / 生成日志").clicked() {
+            action.open_perf_panel = true;
         }
     });
 

@@ -4,116 +4,91 @@
 //!
 //! - **AdaptiveBatchSize**: 根据实际步骤执行时间动态调整每帧批量大小
 //! - **PerfProfiler**: 记录每步执行时间，识别瓶颈并输出分析报告
-//! - **ParallelReplay**: 并行回放优化（利用无副作用步骤的独立性）
+//! - **TextureUpdateThrottle**: 智能纹理更新节流
 //!
-//! ## 设计原则
-//!
-//! - 引擎无需手动配置优化参数——所有调优基于运行时测量
-//! - 对现有 Pipeline 接口零侵入——通过组合而非继承
+//! 所有可调参数来自 `EngineConfig`，不再硬编码。
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+use crate::storage::engine_config::EngineConfig;
 
 // ═══════════════════════════════════════════════════════════
 // 自适应批量大小控制
 // ═══════════════════════════════════════════════════════════
 
 /// 自适应批量大小控制器
-///
-/// 在增量执行（run_to_end）期间，动态调整每帧执行的步骤数，
-/// 将帧时间维持在目标范围内（默认 8-16ms，即 60-120fps）。
 pub struct AdaptiveBatchSize {
-    /// 当前每帧批量大小
     current_batch: usize,
-    /// 目标帧时间下限（ms）
     target_min_ms: f64,
-    /// 目标帧时间上限（ms）
     target_max_ms: f64,
-    /// 最小批量
     min_batch: usize,
-    /// 最大批量
     max_batch: usize,
-    /// 上一帧的执行时间
     last_frame_duration: Duration,
-    /// 指数移动平均的帧时间（用于平滑抖动）
     ema_frame_ms: f64,
-    /// EMA 平滑系数
     alpha: f64,
-}
-
-impl Default for AdaptiveBatchSize {
-    fn default() -> Self {
-        Self {
-            current_batch: 3,
-            target_min_ms: 8.0,
-            target_max_ms: 16.0,
-            min_batch: 1,
-            max_batch: 64,
-            last_frame_duration: Duration::ZERO,
-            ema_frame_ms: 10.0,
-            alpha: 0.3,
-        }
-    }
+    /// 初始 batch（用于 reset）
+    initial_batch: usize,
 }
 
 impl AdaptiveBatchSize {
-    pub fn new() -> Self {
-        Self::default()
+    /// 从 EngineConfig 构造
+    pub fn from_config(cfg: &EngineConfig) -> Self {
+        Self {
+            current_batch: cfg.batch_initial,
+            target_min_ms: cfg.batch_target_min_ms,
+            target_max_ms: cfg.batch_target_max_ms,
+            min_batch: cfg.batch_min,
+            max_batch: cfg.batch_max,
+            last_frame_duration: Duration::ZERO,
+            ema_frame_ms: (cfg.batch_target_min_ms + cfg.batch_target_max_ms) / 2.0,
+            alpha: cfg.batch_ema_alpha,
+            initial_batch: cfg.batch_initial,
+        }
     }
 
-    /// 配置目标帧率范围
-    pub fn with_target_fps(mut self, min_fps: f64, max_fps: f64) -> Self {
-        self.target_max_ms = 1000.0 / min_fps;
-        self.target_min_ms = 1000.0 / max_fps;
-        self
+    /// 应用新配置（UI 修改参数后调用）
+    pub fn apply_config(&mut self, cfg: &EngineConfig) {
+        self.target_min_ms = cfg.batch_target_min_ms;
+        self.target_max_ms = cfg.batch_target_max_ms;
+        self.min_batch = cfg.batch_min;
+        self.max_batch = cfg.batch_max;
+        self.alpha = cfg.batch_ema_alpha;
+        self.initial_batch = cfg.batch_initial;
     }
 
-    /// 获取当前推荐的批量大小
     pub fn batch_size(&self) -> usize {
         self.current_batch
     }
 
-    /// 报告一帧的执行时间，自动调整批量大小
     pub fn report_frame(&mut self, duration: Duration) {
         self.last_frame_duration = duration;
         let frame_ms = duration.as_secs_f64() * 1000.0;
-
-        // 更新 EMA
         self.ema_frame_ms = self.alpha * frame_ms + (1.0 - self.alpha) * self.ema_frame_ms;
 
-        // 调整策略：
-        // - 帧时间 < target_min → 可以做更多（加倍或 +50%）
-        // - 帧时间 > target_max → 需要减少（减半或 -25%）
-        // - 在目标范围内 → 保持不变
         if self.ema_frame_ms < self.target_min_ms {
-            // 帧很快，可以增加批量
             let ratio = (self.target_min_ms / self.ema_frame_ms).min(2.0);
             self.current_batch = ((self.current_batch as f64 * ratio).ceil() as usize)
                 .max(self.current_batch + 1)
                 .min(self.max_batch);
         } else if self.ema_frame_ms > self.target_max_ms {
-            // 帧太慢，需要减少批量
             let ratio = (self.target_max_ms / self.ema_frame_ms).max(0.5);
             self.current_batch = ((self.current_batch as f64 * ratio).floor() as usize)
                 .max(self.min_batch);
         }
-        // 在目标范围内：不调整
     }
 
-    /// 获取上一帧执行时间
     pub fn last_frame_duration(&self) -> Duration {
         self.last_frame_duration
     }
 
-    /// 获取 EMA 平滑帧时间（ms）
     pub fn ema_frame_ms(&self) -> f64 {
         self.ema_frame_ms
     }
 
-    /// 重置状态
     pub fn reset(&mut self) {
-        self.current_batch = 3;
-        self.ema_frame_ms = 10.0;
+        self.current_batch = self.initial_batch;
+        self.ema_frame_ms = (self.target_min_ms + self.target_max_ms) / 2.0;
         self.last_frame_duration = Duration::ZERO;
     }
 }
@@ -305,31 +280,22 @@ impl PerfProfiler {
 // ═══════════════════════════════════════════════════════════
 
 /// 智能纹理更新控制器
-///
-/// 在增量执行期间，根据世界大小和帧率动态调整纹理刷新频率，
-/// 避免过于频繁的 CPU→GPU 上传成为瓶颈。
 pub struct TextureUpdateThrottle {
-    /// 帧计数器
     frame_counter: usize,
-    /// 当前刷新间隔（每 N 帧刷新一次）  
     refresh_interval: usize,
-    /// 世界总像素数（用于估算上传开销）
     world_pixels: usize,
 }
 
 impl TextureUpdateThrottle {
-    pub fn new(world_width: u32, world_height: u32) -> Self {
+    /// 从 EngineConfig 构造
+    pub fn from_config(cfg: &EngineConfig, world_width: u32, world_height: u32) -> Self {
         let world_pixels = (world_width as usize) * (world_height as usize);
-        // 根据世界大小自动调整：
-        // < 100万像素 → 每 3 帧      (small world)
-        // 100-400万像素 → 每 5 帧     (medium world)
-        // > 400万像素 → 每 8 帧       (large world)
-        let refresh_interval = if world_pixels < 1_000_000 {
-            3
-        } else if world_pixels < 4_000_000 {
-            5
+        let refresh_interval = if world_pixels < cfg.throttle_small_threshold {
+            cfg.throttle_refresh_small
+        } else if world_pixels < cfg.throttle_large_threshold {
+            cfg.throttle_refresh_medium
         } else {
-            8
+            cfg.throttle_refresh_large
         };
 
         Self {
