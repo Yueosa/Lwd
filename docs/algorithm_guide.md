@@ -6,35 +6,43 @@
 
 ## 目录
 
-- [概念模型](#概念模型)
-- [资产文件](#资产文件)
-  - [blocks.json — 方块定义](#blocksjson--方块定义)
-  - [biome.json — 环境定义](#biomejson--环境定义)
-  - [world.json — 世界配置](#worldjson--世界配置)
-- [算法接口](#算法接口)
-  - [PhaseAlgorithm trait](#phasealgorithm-trait)
-  - [PhaseMeta 与步骤/参数声明](#phasemeta-与步骤参数声明)
-  - [参数类型](#参数类型)
-- [执行上下文（RuntimeContext）](#执行上下文runtimecontext)
-  - [字段一览](#字段一览)
-  - [层级查询 API](#层级查询-api)
-  - [跨步骤共享状态](#跨步骤共享状态)
-- [几何图形系统](#几何图形系统)
-  - [Shape trait](#shape-trait)
-  - [四种基础形状](#四种基础形状)
-  - [集合运算](#集合运算)
-  - [填充函数](#填充函数)
-  - [形状日志](#形状日志)
-- [世界与环境数据](#世界与环境数据)
-  - [World — 方块网格](#world--方块网格)
-  - [BiomeMap — 环境网格](#biomemap--环境网格)
-- [开发教程：从零添加一个算法](#开发教程从零添加一个算法)
-  - [第一步：创建模块文件](#第一步创建模块文件)
-  - [第二步：定义参数](#第二步定义参数)
-  - [第三步：实现 PhaseAlgorithm](#第三步实现-phasealgorithm)
-  - [第四步：实现步骤逻辑](#第四步实现步骤逻辑)
-  - [第五步：注册到管线](#第五步注册到管线)
-- [现有算法参考](#现有算法参考)
+- [算法开发指南](#算法开发指南)
+  - [目录](#目录)
+  - [概念模型](#概念模型)
+  - [资产文件](#资产文件)
+    - [blocks.json — 方块定义](#blocksjson--方块定义)
+    - [biome.json — 环境定义](#biomejson--环境定义)
+    - [world.json — 世界配置](#worldjson--世界配置)
+      - [world\_sizes — 世界尺寸规格](#world_sizes--世界尺寸规格)
+      - [layers — 层级定义](#layers--层级定义)
+  - [算法接口](#算法接口)
+    - [PhaseAlgorithm trait](#phasealgorithm-trait)
+    - [PhaseMeta 与步骤/参数声明](#phasemeta-与步骤参数声明)
+    - [参数类型](#参数类型)
+  - [执行上下文（RuntimeContext）](#执行上下文runtimecontext)
+    - [字段一览](#字段一览)
+    - [层级查询 API](#层级查询-api)
+    - [跨步骤共享状态](#跨步骤共享状态)
+  - [几何图形系统](#几何图形系统)
+    - [Shape trait](#shape-trait)
+    - [四种基础形状](#四种基础形状)
+      - [Rect — 矩形](#rect--矩形)
+      - [Ellipse — 椭圆](#ellipse--椭圆)
+      - [Trapezoid — 梯形](#trapezoid--梯形)
+      - [Column — 垂直列](#column--垂直列)
+    - [集合运算](#集合运算)
+    - [填充函数](#填充函数)
+    - [形状日志](#形状日志)
+  - [世界与环境数据](#世界与环境数据)
+    - [World — 方块网格](#world--方块网格)
+    - [BiomeMap — 环境网格](#biomemap--环境网格)
+  - [开发教程：从零添加一个算法](#开发教程从零添加一个算法)
+    - [第一步：创建模块文件](#第一步创建模块文件)
+    - [第二步：定义参数](#第二步定义参数)
+    - [第三步：实现 PhaseAlgorithm](#第三步实现-phasealgorithm)
+    - [第四步：实现步骤逻辑](#第四步实现步骤逻辑)
+    - [第五步：注册到管线](#第五步注册到管线)
+  - [现有算法参考](#现有算法参考)
 
 ---
 
@@ -578,11 +586,15 @@ pub fn execute(algo: &TerrainCarvingAlgorithm, ctx: &mut RuntimeContext) -> Resu
 ```rust
 use crate::algorithms::terrain_carving::TerrainCarvingAlgorithm;
 
-pub fn build_pipeline(seed: u64, biome_definitions: Vec<BiomeDefinition>) -> GenerationPipeline {
+pub fn build_pipeline(
+    seed: u64,
+    biome_definitions: Vec<BiomeDefinition>,
+    layer_definitions: &[LayerDefinition],
+) -> GenerationPipeline {
     let mut pipeline = GenerationPipeline::new(seed, biome_definitions.clone());
 
     // Phase 1: 环境判定（已有）
-    pipeline.register(Box::new(BiomeDivisionAlgorithm::new(&biome_definitions)));
+    pipeline.register(Box::new(BiomeDivisionAlgorithm::new(&biome_definitions, layer_definitions)));
 
     // Phase 2: 地形雕刻（新增）
     pipeline.register(Box::new(TerrainCarvingAlgorithm::new()));
