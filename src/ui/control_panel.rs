@@ -93,6 +93,10 @@ pub fn show_control_panel(
 ) -> ControlAction {
     let mut action = ControlAction::none();
 
+    ScrollArea::vertical()
+        .auto_shrink(false)
+        .show(ui, |ui: &mut Ui| {
+
     // ── 标题 ──
     ui.add_space(6.0);
     ui.with_layout(Layout::top_down(Align::Center), |ui| {
@@ -220,8 +224,10 @@ pub fn show_control_panel(
 
     // ── 步骤列表 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 步骤列表");
+    let step_list_max_h = (ui.available_height() * 0.35).clamp(100.0, 300.0);
     ScrollArea::vertical()
-        .max_height(300.0)
+        .id_source("step_list_scroll")
+        .max_height(step_list_max_h)
         .show(ui, |ui| {
             for phase in phase_info {
                 let (phase_prefix, phase_color) = match phase.status {
@@ -372,6 +378,8 @@ pub fn show_control_panel(
             action.open_perf_panel = true;
         }
     });
+
+    }); // end ScrollArea
 
     action
 }
