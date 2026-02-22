@@ -15,7 +15,7 @@ const ASCII_ART: &str = "\
 ╚══════╝╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═════╝";
 
 const SUBTITLE: &str = "Terraria-style 2D World Generation Visualizer";
-const HINT: &str = "< 在左侧面板点击 [>> 重新初始化] 开始 >";
+const HINT: &str = "< 在左侧面板点击 [重新初始化] 开始 >";
 
 /// 在中央画布区域绘制 splash 字符画
 pub fn show_splash(ui: &mut Ui) {

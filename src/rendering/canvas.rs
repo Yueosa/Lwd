@@ -122,3 +122,91 @@ pub fn world_rows_to_color_pixels(
 
     pixels
 }
+
+/// 仅渲染世界的一个矩形子区域 [rx, ry, rw×rh] → ColorImage
+///
+/// 用于视口裁剪渲染——只生成当前可见区域+缓冲区的像素。
+/// 越放大可见区域越小，需要渲染的像素越少，越流畅。
+pub fn world_to_color_image_region(
+    world: &World,
+    lut: &[Color32; 256],
+    rx: u32,
+    ry: u32,
+    rw: u32,
+    rh: u32,
+) -> ColorImage {
+    let rw = rw as usize;
+    let rh = rh as usize;
+    let rx = rx as usize;
+    let ry = ry as usize;
+    let ww = world.width as usize;
+
+    let mut pixels = vec![Color32::TRANSPARENT; rw * rh];
+
+    pixels
+        .par_chunks_mut(rw)
+        .enumerate()
+        .for_each(|(row_i, row_pixels)| {
+            let src_y = ry + row_i;
+            let src_row_start = src_y * ww + rx;
+            for x in 0..rw {
+                row_pixels[x] = lut[world.tiles[src_row_start + x] as usize];
+            }
+        });
+
+    ColorImage {
+        size: [rw, rh],
+        pixels,
+    }
+}
+
+/// 渲染世界子区域 [rx, ry, rw×rh] 并按 `lod` 倍降采样。
+///
+/// 输出尺寸为 `(rw/lod, rh/lod)`。每个输出像素取源 NxN 块的左上角颜色。
+/// 当 zoom < 1 时，屏幕上每个像素覆盖多个世界像素，全分辨率是浪费。
+/// LOD 让纹理像素数与屏幕像素数匹配，zoom 越小越快。
+pub fn world_to_color_image_region_lod(
+    world: &World,
+    lut: &[Color32; 256],
+    rx: u32,
+    ry: u32,
+    rw: u32,
+    rh: u32,
+    lod: u32,
+) -> ColorImage {
+    if lod <= 1 {
+        return world_to_color_image_region(world, lut, rx, ry, rw, rh);
+    }
+
+    let f = lod as usize;
+    let rw = rw as usize;
+    let rh = rh as usize;
+    let rx = rx as usize;
+    let ry = ry as usize;
+    let ww = world.width as usize;
+
+    let out_w = (rw + f - 1) / f;
+    let out_h = (rh + f - 1) / f;
+
+    let mut pixels = vec![Color32::TRANSPARENT; out_w * out_h];
+
+    pixels
+        .par_chunks_mut(out_w)
+        .enumerate()
+        .for_each(|(out_row, row_pixels)| {
+            let src_y = ry + out_row * f;
+            let src_row_start = src_y * ww;
+            for out_x in 0..out_w {
+                let src_x = rx + out_x * f;
+                let idx = src_row_start + src_x;
+                if idx < world.tiles.len() {
+                    row_pixels[out_x] = lut[world.tiles[idx] as usize];
+                }
+            }
+        });
+
+    ColorImage {
+        size: [out_w, out_h],
+        pixels,
+    }
+}

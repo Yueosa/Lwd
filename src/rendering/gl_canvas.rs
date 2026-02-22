@@ -111,6 +111,18 @@ pub struct GlCanvasState {
     biome_valid: bool,
     has_world: bool,
     has_biome: bool,
+    /// Currently uploaded world sub-region `[x, y, w, h]` in world pixels.
+    world_region: Option<[u32; 4]>,
+    /// Currently uploaded biome sub-region (same coords as world_region).
+    biome_region: Option<[u32; 4]>,
+    /// Current LOD level for the world texture.
+    lod: u32,
+    /// Current LOD level for the biome texture.
+    biome_lod: u32,
+    /// True when the underlying world tile data changed (generation step).
+    /// Forces re-render of the current viewport region.
+    world_data_version: u64,
+    last_rendered_version: u64,
 }
 
 impl GlCanvasState {
@@ -124,31 +136,99 @@ impl GlCanvasState {
             biome_valid: false,
             has_world: false,
             has_biome: false,
+            world_region: None,
+            biome_region: None,
+            lod: 1,
+            biome_lod: 1,
+            world_data_version: 0,
+            last_rendered_version: 0,
         }
     }
 
-    /// Store new world texture pixel data (RGBA `u8`).
-    /// Invalidates the biome overlay as well.
-    pub fn set_world_pixels(&mut self, rgba: Vec<u8>, width: u32, height: u32) {
-        self.world_data = Some(PendingTexture { rgba, width, height });
+    /// Store pixels for a world sub-region at given LOD.
+    pub fn set_world_region_pixels(
+        &mut self,
+        rgba: Vec<u8>,
+        tex_w: u32,
+        tex_h: u32,
+        region: [u32; 4],
+        lod: u32,
+    ) {
+        self.world_data = Some(PendingTexture {
+            rgba,
+            width: tex_w,
+            height: tex_h,
+        });
         self.world_dirty = true;
         self.has_world = true;
-        // World changed → biome overlay is stale
+        self.world_region = Some(region);
+        self.lod = lod;
+        self.last_rendered_version = self.world_data_version;
+        // World region changed → biome overlay for this region is stale
         self.biome_valid = false;
         self.has_biome = false;
+        self.biome_region = None;
     }
 
-    /// Store new biome overlay pixel data (RGBA `u8`).
-    pub fn set_biome_pixels(&mut self, rgba: Vec<u8>, width: u32, height: u32) {
-        self.biome_data = Some(PendingTexture { rgba, width, height });
+    /// Store biome overlay pixels for a sub-region at given LOD.
+    pub fn set_biome_region_pixels(
+        &mut self,
+        rgba: Vec<u8>,
+        tex_w: u32,
+        tex_h: u32,
+        region: [u32; 4],
+        lod: u32,
+    ) {
+        self.biome_data = Some(PendingTexture {
+            rgba,
+            width: tex_w,
+            height: tex_h,
+        });
         self.biome_dirty = true;
         self.biome_valid = true;
         self.has_biome = true;
+        self.biome_region = Some(region);
+        self.biome_lod = lod;
     }
 
-    /// Whether the biome overlay data needs regeneration from the biome map.
-    pub fn needs_biome_regen(&self) -> bool {
-        !self.biome_valid
+    /// Check whether the currently buffered region fully covers `visible`
+    /// world rect `[x, y, w, h]` AND the world data hasn't changed AND LOD matches.
+    pub fn needs_region_update(&self, visible: [u32; 4], lod: u32) -> bool {
+        if self.world_data_version != self.last_rendered_version {
+            return true;
+        }
+        if self.lod != lod {
+            return true;
+        }
+        match self.world_region {
+            None => true,
+            Some([rx, ry, rw, rh]) => {
+                let [vx, vy, vw, vh] = visible;
+                vx < rx
+                    || vy < ry
+                    || vx + vw > rx + rw
+                    || vy + vh > ry + rh
+            }
+        }
+    }
+
+    /// Whether the biome overlay needs regeneration for the given region + lod.
+    pub fn needs_biome_regen(&self, region: [u32; 4], lod: u32) -> bool {
+        if !self.biome_valid {
+            return true;
+        }
+        if self.biome_lod != lod {
+            return true;
+        }
+        match self.biome_region {
+            None => true,
+            Some(br) => br != region,
+        }
+    }
+
+    /// Current LOD level for the world texture.
+    pub fn current_lod(&self) -> u32 {
+        self.lod
     }
 
     /// Whether valid biome overlay data is ready for rendering.
@@ -156,14 +236,25 @@ impl GlCanvasState {
         self.has_biome
     }
 
-    /// Explicitly invalidate biome overlay (e.g. when biome map changes).
+    /// Bump world data version — call when tile data changes (generation step).
+    pub fn mark_world_changed(&mut self) {
+        self.world_data_version += 1;
+    }
+
+    /// The currently buffered world region `[x, y, w, h]`.
+    pub fn world_region(&self) -> Option<[u32; 4]> {
+        self.world_region
+    }
+
+    /// Explicitly invalidate biome overlay (e.g. when overlay toggle changes).
     #[allow(dead_code)]
     pub fn invalidate_biome(&mut self) {
         self.biome_valid = false;
         self.has_biome = false;
+        self.biome_region = None;
     }
 
-    /// Release GL resources.  Must be called with a current GL context.
+    /// Release GL resources.
     #[allow(dead_code)]
     pub fn destroy(&mut self, gl: &glow::Context) {
         if let Some(res) = self.resources.take() {

@@ -14,7 +14,7 @@ use crate::core::world::{World, WorldProfile};
 use crate::generation::{build_pipeline, GenerationPipeline, WorldSnapshot, export_png,
     AdaptiveBatchSize, TextureUpdateThrottle};
 use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image, world_to_color_image_downsampled};
-use crate::rendering::gl_canvas::{GlCanvasState, pixels_to_rgba};
+use crate::rendering::gl_canvas::GlCanvasState;
 use crate::rendering::viewport::ViewportState;
 use crate::storage::engine_config::EngineConfig;
 use crate::storage::runtime as app_runtime;
@@ -124,8 +124,6 @@ impl LianWorldApp {
         let pipeline = build_pipeline(seed, biomes.clone());
 
         let image = world_to_color_image(&world, &color_lut);
-        let rgba = pixels_to_rgba(&image.pixels);
-        let (iw, ih) = (image.size[0] as u32, image.size[1] as u32);
         let texture = Some(cc.egui_ctx.load_texture(
             "world_texture",
             image,
@@ -133,7 +131,6 @@ impl LianWorldApp {
         ));
 
         let gl_canvas = Arc::new(Mutex::new(GlCanvasState::new()));
-        gl_canvas.lock().unwrap().set_world_pixels(rgba, iw, ih);
 
         // 从 runtime.json 恢复 UI 状态
         let (saved_size, saved_overlay) = load_runtime_ui_state();
@@ -230,25 +227,24 @@ impl LianWorldApp {
             return;
         }
 
-        let image = if self.running_to_end && !self.pipeline.is_complete() {
-            // 生成进行中——使用降采样预览纹理
-            let factor = self.downsample_factor();
-            self.preview_factor = factor;
-            self.texture_is_preview = factor > 1;
-            world_to_color_image_downsampled(&self.world, &self.color_lut, factor)
+        // Bump version → GL region will re-render on next show_canvas
+        self.gl_canvas.lock().unwrap().mark_world_changed();
+
+        // Minimap texture: always use downsampled for efficiency
+        let minimap_factor = self.downsample_factor().max(2); // at least 2× for minimap
+        let image = world_to_color_image_downsampled(
+            &self.world, &self.color_lut, minimap_factor,
+        );
+
+        if self.running_to_end && !self.pipeline.is_complete() {
+            self.preview_factor = minimap_factor;
+            self.texture_is_preview = true;
         } else {
-            // 空闲 / 单步 / 生成刚完成——全分辨率
-            self.preview_factor = 1;
+            self.preview_factor = minimap_factor;
             self.texture_is_preview = false;
-            world_to_color_image(&self.world, &self.color_lut)
-        };
+        }
 
-        // Push pixel data to GL canvas state (also invalidates biome overlay)
-        let rgba = pixels_to_rgba(&image.pixels);
-        let (iw, ih) = (image.size[0] as u32, image.size[1] as u32);
-        self.gl_canvas.lock().unwrap().set_world_pixels(rgba, iw, ih);
-
-        // Keep egui texture for minimap
+        // Minimap texture (egui TextureHandle)
         self.texture = Some(ctx.load_texture(
             "world_texture",
             image,
@@ -1035,8 +1031,8 @@ impl eframe::App for LianWorldApp {
                 if let Some(hover) = show_canvas(
                     ui,
                     texture,
-                    self.world.width,
-                    self.world.height,
+                    &self.world,
+                    &self.color_lut,
                     &mut self.viewport,
                     biome_map,
                     &self.biomes,

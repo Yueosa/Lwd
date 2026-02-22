@@ -5,6 +5,8 @@ use rayon::prelude::*;
 
 use crate::core::biome::{BiomeDefinition, BiomeMap};
 use crate::core::layer::LayerDefinition;
+use crate::core::world::World;
+use crate::rendering::canvas::world_to_color_image_region_lod;
 use crate::rendering::gl_canvas::{GlCanvasParams, GlCanvasState, make_canvas_callback, pixels_to_rgba};
 use crate::rendering::viewport::ViewportState;
 
@@ -45,6 +47,56 @@ fn biome_overlay_image(
 
     ColorImage {
         size: [w, h],
+        pixels,
+    }
+}
+
+/// 从 BiomeMap 的子区域 [rx, ry, rw×rh] 生成半透明 overlay 纹理，按 LOD 降采样
+fn biome_overlay_image_region_lod(
+    biome_map: &BiomeMap,
+    biome_definitions: &[BiomeDefinition],
+    rx: u32,
+    ry: u32,
+    rw: u32,
+    rh: u32,
+    lod: u32,
+) -> ColorImage {
+    let f = lod.max(1) as usize;
+    let rw = rw as usize;
+    let rh = rh as usize;
+    let rx = rx as usize;
+    let ry = ry as usize;
+    let bw = biome_map.width as usize;
+
+    let out_w = (rw + f - 1) / f;
+    let out_h = (rh + f - 1) / f;
+
+    let mut biome_lut = [Color32::TRANSPARENT; 256];
+    for bdef in biome_definitions {
+        let c = bdef.overlay_color;
+        biome_lut[bdef.id as usize] = Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+    }
+
+    let data = biome_map.data();
+    let mut pixels = vec![Color32::TRANSPARENT; out_w * out_h];
+
+    pixels
+        .par_chunks_mut(out_w)
+        .enumerate()
+        .for_each(|(out_row, row_pixels)| {
+            let src_y = ry + out_row * f;
+            let src_row_start = src_y * bw;
+            for out_x in 0..out_w {
+                let src_x = rx + out_x * f;
+                let idx = src_row_start + src_x;
+                if idx < data.len() {
+                    row_pixels[out_x] = biome_lut[data[idx] as usize];
+                }
+            }
+        });
+
+    ColorImage {
+        size: [out_w, out_h],
         pixels,
     }
 }
@@ -208,8 +260,8 @@ fn draw_biome_labels(
 pub fn show_canvas(
     ui: &mut Ui,
     texture: &TextureHandle,
-    world_width: u32,
-    world_height: u32,
+    world: &World,
+    color_lut: &[Color32; 256],
     viewport: &mut ViewportState,
     biome_map: Option<&BiomeMap>,
     biome_definitions: &[BiomeDefinition],
@@ -220,10 +272,13 @@ pub fn show_canvas(
     show_layer_labels: bool,
     gl_canvas: &Arc<Mutex<GlCanvasState>>,
 ) -> Option<HoverInfo> {
+    let world_width = world.width;
+    let world_height = world.height;
+
     let available = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(available, Sense::click_and_drag());
 
-    // ── world image rect ─────────────────────────────────────
+    // ── world image rect (full world in screen coords) ───────
     let image_size = Vec2::new(
         world_width as f32 * viewport.zoom,
         world_height as f32 * viewport.zoom,
@@ -231,31 +286,112 @@ pub fn show_canvas(
     let center = rect.center() + Vec2::new(viewport.offset[0], viewport.offset[1]);
     let image_rect = Rect::from_center_size(center, image_size);
 
-    // ── biome overlay data (push to GL state if stale) ───────
+    // ── viewport culling: compute visible world region ───────
+    let vis_left = ((rect.left() - image_rect.left()) / viewport.zoom)
+        .max(0.0)
+        .floor() as u32;
+    let vis_top = ((rect.top() - image_rect.top()) / viewport.zoom)
+        .max(0.0)
+        .floor() as u32;
+    let vis_right = ((rect.right() - image_rect.left()) / viewport.zoom)
+        .min(world_width as f32)
+        .ceil() as u32;
+    let vis_bottom = ((rect.bottom() - image_rect.top()) / viewport.zoom)
+        .min(world_height as f32)
+        .ceil() as u32;
+
+    let vis_x = vis_left.min(world_width);
+    let vis_y = vis_top.min(world_height);
+    let vis_w = vis_right.saturating_sub(vis_left).min(world_width - vis_x);
+    let vis_h = vis_bottom.saturating_sub(vis_top).min(world_height - vis_y);
+
+    // ── dynamic LOD: when zoomed out, downsample to match screen resolution ──
+    // zoom=0.3 → each screen pixel covers ~3 world pixels → LOD 3
+    // zoom=1.0 → 1:1 → LOD 1 (full resolution)
+    // zoom=5.0 → zoomed in → LOD 1 (full resolution, small region)
+    let lod = if viewport.zoom < 1.0 {
+        (1.0 / viewport.zoom).floor().max(1.0).min(8.0) as u32
+    } else {
+        1u32
+    };
+
+    // Expand to 3× buffer for comfortable panning headroom
+    // Align buffer boundaries to LOD grid for consistent sampling
+    let align = |v: u32| (v / lod) * lod;
+    let buf_x = align(vis_x.saturating_sub(vis_w));
+    let buf_y = align(vis_y.saturating_sub(vis_h));
+    let buf_right = (vis_x + vis_w * 2).min(world_width);
+    let buf_bottom = (vis_y + vis_h * 2).min(world_height);
+    let buf_w = buf_right - buf_x;
+    let buf_h = buf_bottom - buf_y;
+
+    let visible_region = [vis_x, vis_y, vis_w, vis_h];
+    let buffer_region = [buf_x, buf_y, buf_w, buf_h];
+
+    // ── re-render region pixels if needed (viewport moved / world changed / LOD changed)
+    {
+        let needs_update = gl_canvas.lock().unwrap().needs_region_update(visible_region, lod);
+        if needs_update && buf_w > 0 && buf_h > 0 {
+            let img = world_to_color_image_region_lod(
+                world, color_lut,
+                buffer_region[0], buffer_region[1],
+                buffer_region[2], buffer_region[3],
+                lod,
+            );
+            let tex_w = img.size[0] as u32;
+            let tex_h = img.size[1] as u32;
+            let rgba = pixels_to_rgba(&img.pixels);
+            gl_canvas.lock().unwrap().set_world_region_pixels(
+                rgba, tex_w, tex_h,
+                buffer_region, lod,
+            );
+        }
+    }
+
+    // ── biome overlay for current region ─────────────────────
     if show_biome_color {
         if let Some(bm) = biome_map {
-            let needs_regen = gl_canvas.lock().unwrap().needs_biome_regen();
-            if needs_regen {
-                let img = biome_overlay_image(bm, biome_definitions);
+            let st = gl_canvas.lock().unwrap();
+            let cur_region = st.world_region().unwrap_or(buffer_region);
+            let cur_lod = st.current_lod();
+            let needs_regen = st.needs_biome_regen(cur_region, cur_lod);
+            drop(st);
+            if needs_regen && cur_region[2] > 0 && cur_region[3] > 0 {
+                let img = biome_overlay_image_region_lod(
+                    bm,
+                    biome_definitions,
+                    cur_region[0], cur_region[1],
+                    cur_region[2], cur_region[3],
+                    cur_lod,
+                );
+                let tex_w = img.size[0] as u32;
+                let tex_h = img.size[1] as u32;
                 let rgba = pixels_to_rgba(&img.pixels);
-                gl_canvas.lock().unwrap().set_biome_pixels(
-                    rgba,
-                    img.size[0] as u32,
-                    img.size[1] as u32,
+                gl_canvas.lock().unwrap().set_biome_region_pixels(
+                    rgba, tex_w, tex_h,
+                    cur_region, cur_lod,
                 );
             }
         }
     }
 
-    // ── GL PaintCallback (checkerboard + world + biome) ──────
+    // ── GL PaintCallback (checkerboard + world region + biome) ──
     {
+        // Map the currently buffered region to screen coords
+        let region = gl_canvas.lock().unwrap().world_region().unwrap_or(buffer_region);
+
+        let region_screen_left = image_rect.left() + region[0] as f32 * viewport.zoom;
+        let region_screen_top = image_rect.top() + region[1] as f32 * viewport.zoom;
+        let region_screen_right = region_screen_left + region[2] as f32 * viewport.zoom;
+        let region_screen_bottom = region_screen_top + region[3] as f32 * viewport.zoom;
+
         let rw = rect.width().max(1.0);
         let rh = rect.height().max(1.0);
         let world_rect_norm = [
-            (image_rect.left() - rect.left()) / rw,
-            (image_rect.top() - rect.top()) / rh,
-            (image_rect.right() - rect.left()) / rw,
-            (image_rect.bottom() - rect.top()) / rh,
+            (region_screen_left - rect.left()) / rw,
+            (region_screen_top - rect.top()) / rh,
+            (region_screen_right - rect.left()) / rw,
+            (region_screen_bottom - rect.top()) / rh,
         ];
         let has_biome_flag =
             show_biome_color && gl_canvas.lock().unwrap().has_biome_ready();
@@ -272,7 +408,7 @@ pub fn show_canvas(
         ui.painter().add(callback);
     }
 
-    // ── border around world image ────────────────────────────
+    // ── border around world image (full world extent) ────────
     let painter = ui.painter_at(rect);
     painter.rect_stroke(image_rect, 0.0, Stroke::new(1.0, Color32::from_gray(120)));
 
