@@ -1,8 +1,11 @@
-use egui::{Color32, ColorImage, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2};
+use std::sync::{Arc, Mutex};
+
+use egui::{Color32, ColorImage, Pos2, Rect, Sense, Stroke, TextureHandle, Ui, Vec2};
 use rayon::prelude::*;
 
 use crate::core::biome::{BiomeDefinition, BiomeMap};
 use crate::core::layer::LayerDefinition;
+use crate::rendering::gl_canvas::{GlCanvasParams, GlCanvasState, make_canvas_callback, pixels_to_rgba};
 use crate::rendering::viewport::ViewportState;
 
 #[derive(Debug, Clone, Copy)]
@@ -215,31 +218,12 @@ pub fn show_canvas(
     show_biome_labels: bool,
     show_layer_lines: bool,
     show_layer_labels: bool,
-    biome_overlay_texture: &mut Option<TextureHandle>,
+    gl_canvas: &Arc<Mutex<GlCanvasState>>,
 ) -> Option<HoverInfo> {
     let available = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(available, Sense::click_and_drag());
 
-    // ── background checkerboard ──────────────────────────────
-    let painter = ui.painter_at(rect);
-    let tile = 48.0;
-    let c0 = Color32::from_gray(28);
-    let c1 = Color32::from_gray(35);
-    let cols = (rect.width() / tile).ceil() as i32;
-    let rows = (rect.height() / tile).ceil() as i32;
-    for r in 0..rows {
-        for c in 0..cols {
-            let min = Pos2::new(rect.left() + c as f32 * tile, rect.top() + r as f32 * tile);
-            let max = Pos2::new(
-                (min.x + tile).min(rect.right()),
-                (min.y + tile).min(rect.bottom()),
-            );
-            let color = if (r + c) % 2 == 0 { c0 } else { c1 };
-            painter.rect_filled(Rect::from_min_max(min, max), 0.0, color);
-        }
-    }
-
-    // ── world image ──────────────────────────────────────────
+    // ── world image rect ─────────────────────────────────────
     let image_size = Vec2::new(
         world_width as f32 * viewport.zoom,
         world_height as f32 * viewport.zoom,
@@ -247,42 +231,55 @@ pub fn show_canvas(
     let center = rect.center() + Vec2::new(viewport.offset[0], viewport.offset[1]);
     let image_rect = Rect::from_center_size(center, image_size);
 
-    painter.image(
-        texture.id(),
-        image_rect,
-        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-        Color32::WHITE,
-    );
+    // ── biome overlay data (push to GL state if stale) ───────
+    if show_biome_color {
+        if let Some(bm) = biome_map {
+            let needs_regen = gl_canvas.lock().unwrap().needs_biome_regen();
+            if needs_regen {
+                let img = biome_overlay_image(bm, biome_definitions);
+                let rgba = pixels_to_rgba(&img.pixels);
+                gl_canvas.lock().unwrap().set_biome_pixels(
+                    rgba,
+                    img.size[0] as u32,
+                    img.size[1] as u32,
+                );
+            }
+        }
+    }
+
+    // ── GL PaintCallback (checkerboard + world + biome) ──────
+    {
+        let rw = rect.width().max(1.0);
+        let rh = rect.height().max(1.0);
+        let world_rect_norm = [
+            (image_rect.left() - rect.left()) / rw,
+            (image_rect.top() - rect.top()) / rh,
+            (image_rect.right() - rect.left()) / rw,
+            (image_rect.bottom() - rect.top()) / rh,
+        ];
+        let has_biome_flag =
+            show_biome_color && gl_canvas.lock().unwrap().has_biome_ready();
+
+        let callback = make_canvas_callback(
+            Arc::clone(gl_canvas),
+            GlCanvasParams {
+                canvas_rect: rect,
+                world_rect_norm,
+                has_world: true,
+                has_biome: has_biome_flag,
+            },
+        );
+        ui.painter().add(callback);
+    }
+
+    // ── border around world image ────────────────────────────
+    let painter = ui.painter_at(rect);
     painter.rect_stroke(image_rect, 0.0, Stroke::new(1.0, Color32::from_gray(120)));
 
-    // ── biome overlay ──────────────────────────────────────────
-    if show_biome_color || show_biome_labels {
+    // ── biome labels (lightweight egui text) ─────────────────
+    if show_biome_labels {
         if let Some(bm) = biome_map {
-            // 覆盖色纹理
-            if show_biome_color {
-                if biome_overlay_texture.is_none() {
-                    let img = biome_overlay_image(bm, biome_definitions);
-                    *biome_overlay_texture = Some(ui.ctx().load_texture(
-                        "biome_overlay",
-                        img,
-                        TextureOptions::NEAREST,
-                    ));
-                }
-
-                if let Some(ov_tex) = biome_overlay_texture {
-                    painter.image(
-                        ov_tex.id(),
-                        image_rect,
-                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                }
-            }
-
-            // 环境名称文字标签
-            if show_biome_labels {
-                draw_biome_labels(&painter, bm, biome_definitions, image_rect, viewport.zoom);
-            }
+            draw_biome_labels(&painter, bm, biome_definitions, image_rect, viewport.zoom);
         }
     }
 
@@ -427,11 +424,12 @@ pub fn show_canvas(
     // ── scroll wheel to zoom (anchored at cursor) ────────────
     let hovered = response.hovered() || response.dragged();
     if hovered {
-        let scroll = ui.ctx().input(|i| i.smooth_scroll_delta);
+        let scroll = ui.ctx().input(|i| i.raw_scroll_delta);
         if scroll.y.abs() > 0.5 {
             if let Some(pointer) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                 let old_zoom = viewport.zoom;
-                // Gentle: ~5% zoom per typical scroll tick (~50px)
+                // raw_scroll_delta: ~120px/notch (mouse) or smaller (touchpad)
+                // 0.001 × 120 = 0.12 → clamped to ±10% per single scroll event
                 let factor = (1.0 + scroll.y * 0.001).clamp(0.9, 1.1);
                 let new_zoom = (old_zoom * factor).clamp(0.05, 20.0);
                 let scale = new_zoom / old_zoom;

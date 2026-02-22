@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use eframe::egui;
@@ -13,6 +14,7 @@ use crate::core::world::{World, WorldProfile};
 use crate::generation::{build_pipeline, GenerationPipeline, WorldSnapshot, export_png,
     AdaptiveBatchSize, TextureUpdateThrottle};
 use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image, world_to_color_image_downsampled};
+use crate::rendering::gl_canvas::{GlCanvasState, pixels_to_rgba};
 use crate::rendering::viewport::ViewportState;
 use crate::storage::engine_config::EngineConfig;
 use crate::storage::runtime as app_runtime;
@@ -63,7 +65,8 @@ pub struct LianWorldApp {
     texture_is_preview: bool,
     /// 当前降采样倍率（1 = 全分辨率）
     preview_factor: u32,
-    biome_overlay_texture: Option<TextureHandle>,
+    /// GPU 画布渲染器共享状态
+    gl_canvas: Arc<Mutex<GlCanvasState>>,
 
     // ── UI ──
     last_status: String,
@@ -121,11 +124,16 @@ impl LianWorldApp {
         let pipeline = build_pipeline(seed, biomes.clone());
 
         let image = world_to_color_image(&world, &color_lut);
+        let rgba = pixels_to_rgba(&image.pixels);
+        let (iw, ih) = (image.size[0] as u32, image.size[1] as u32);
         let texture = Some(cc.egui_ctx.load_texture(
             "world_texture",
             image,
             egui::TextureOptions::NEAREST,
         ));
+
+        let gl_canvas = Arc::new(Mutex::new(GlCanvasState::new()));
+        gl_canvas.lock().unwrap().set_world_pixels(rgba, iw, ih);
 
         // 从 runtime.json 恢复 UI 状态
         let (saved_size, saved_overlay) = load_runtime_ui_state();
@@ -149,7 +157,7 @@ impl LianWorldApp {
             texture_dirty: false,
             texture_is_preview: false,
             preview_factor: 1,
-            biome_overlay_texture: None,
+            gl_canvas,
             last_status: "世界初始化完成".to_string(),
             hover_status: String::new(),
             overlay: saved_overlay,
@@ -235,13 +243,17 @@ impl LianWorldApp {
             world_to_color_image(&self.world, &self.color_lut)
         };
 
+        // Push pixel data to GL canvas state (also invalidates biome overlay)
+        let rgba = pixels_to_rgba(&image.pixels);
+        let (iw, ih) = (image.size[0] as u32, image.size[1] as u32);
+        self.gl_canvas.lock().unwrap().set_world_pixels(rgba, iw, ih);
+
+        // Keep egui texture for minimap
         self.texture = Some(ctx.load_texture(
             "world_texture",
             image,
             egui::TextureOptions::NEAREST,
         ));
-        // 同时失效 biome overlay（每次步骤执行后重建）
-        self.biome_overlay_texture = None;
         self.texture_dirty = false;
     }
 
@@ -699,7 +711,7 @@ fn is_leap(y: u64) -> bool {
 impl eframe::App for LianWorldApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 检测当前帧是否有缩放/滚动输入——如果在生成中缩放，跳过纹理更新
-        let is_zooming = ctx.input(|i| i.smooth_scroll_delta.y.abs() > 0.5);
+        let is_zooming = ctx.input(|i| i.raw_scroll_delta.y.abs() > 0.5);
 
         self.apply_world_size_change();
 
@@ -765,8 +777,8 @@ impl eframe::App for LianWorldApp {
                 &mut self.overlay,
             );
             if changed {
-                // 切换 biome 覆盖色时重建纹理缓存
-                self.biome_overlay_texture = None;
+                // 切换 biome 覆盖色时重建 GL overlay 缓存
+                self.gl_canvas.lock().unwrap().invalidate_biome();
                 save_runtime_ui_state(self.world_size, &self.overlay);
             }
         }
@@ -1033,7 +1045,7 @@ impl eframe::App for LianWorldApp {
                     self.overlay.show_biome_labels,
                     self.overlay.show_layer_lines,
                     self.overlay.show_layer_labels,
-                    &mut self.biome_overlay_texture,
+                    &self.gl_canvas,
                 ) {
                     let idx = (hover.y * self.world.width + hover.x) as usize;
                     let block_id = self.world.tiles.get(idx).copied().unwrap_or(0);
