@@ -1,5 +1,6 @@
 use egui::{Align, Layout, Rect, ScrollArea, Ui, Vec2};
 
+use crate::config::world::WorldConfig;
 use crate::generation::{PhaseInfo, StepStatus};
 use crate::ui::theme;
 
@@ -73,6 +74,7 @@ pub enum WorldSizeSelection {
     Small,
     Medium,
     Large,
+    Custom,
 }
 
 impl Default for WorldSizeSelection {
@@ -86,6 +88,9 @@ impl Default for WorldSizeSelection {
 pub fn show_control_panel(
     ui: &mut Ui,
     world_size: &mut WorldSizeSelection,
+    custom_width: &mut String,
+    custom_height: &mut String,
+    world_cfg: &WorldConfig,
     seed_input: &mut String,
     phase_info: &[PhaseInfo],
     executed: usize,
@@ -108,9 +113,34 @@ pub fn show_control_panel(
 
     // ── 世界尺寸 ──
     ui.colored_label(theme::BLUE_LIGHT, "◈ 世界尺寸");
-    ui.radio_value(world_size, WorldSizeSelection::Small, "小 (4200×1200)");
-    ui.radio_value(world_size, WorldSizeSelection::Medium, "中 (6400×1800)");
-    ui.radio_value(world_size, WorldSizeSelection::Large, "大 (8400×2400)");
+    // 动态生成预设尺寸 radio buttons
+    let presets: &[(&str, WorldSizeSelection)] = &[
+        ("small", WorldSizeSelection::Small),
+        ("medium", WorldSizeSelection::Medium),
+        ("large", WorldSizeSelection::Large),
+    ];
+    for &(key, variant) in presets {
+        if let Some(size_cfg) = world_cfg.world_sizes.get(key) {
+            if let (Some(w), Some(h)) = (size_cfg.width, size_cfg.height) {
+                let label = format!("{} ({}×{})", size_cfg.description, w, h);
+                ui.radio_value(world_size, variant, label);
+            }
+        }
+    }
+    // 自定义尺寸
+    ui.radio_value(world_size, WorldSizeSelection::Custom, "自定义");
+    if *world_size == WorldSizeSelection::Custom {
+        ui.horizontal(|ui| {
+            ui.label("宽:");
+            ui.add(egui::TextEdit::singleline(custom_width)
+                .hint_text("4200")
+                .desired_width(60.0));
+            ui.label("× 高:");
+            ui.add(egui::TextEdit::singleline(custom_height)
+                .hint_text("1200")
+                .desired_width(60.0));
+        });
+    }
 
     ui.add_space(2.0);
     ui.separator();
