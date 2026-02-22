@@ -6,6 +6,8 @@ pub struct LayerDefinition {
     pub key: String,
     pub start_percent: u8,
     pub end_percent: u8,
+    /// 短名称（用于 UI 标签，如 "太空"、"地表"），从 world.json 读取
+    pub short_name: String,
     pub description: String,
 }
 
@@ -33,6 +35,7 @@ pub fn build_layers(config: &WorldConfig) -> Result<Vec<LayerDefinition>, CoreEr
             key: key.clone(),
             start_percent: layer.start_percent,
             end_percent: layer.end_percent,
+            short_name: layer.short_name.clone().unwrap_or_else(|| key.clone()),
             description: layer.description.clone(),
         });
     }

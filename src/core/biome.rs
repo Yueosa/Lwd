@@ -111,22 +111,36 @@ pub struct BiomeContext {
 
 impl BiomeContext {
     /// 生成可读的组合标签，如 "森林+地表" 或 "海洋+洞穴"
-    pub fn label(&self, biome_definitions: &[BiomeDefinition]) -> String {
+    pub fn label(
+        &self,
+        biome_definitions: &[BiomeDefinition],
+        layers: &[LayerDefinition],
+    ) -> String {
         let h = self
             .horizontal
             .and_then(|id| biome_definitions.iter().find(|b| b.id == id))
             .map(|b| b.name.as_str())
             .unwrap_or("未知环境");
-        let v = self.vertical.as_deref().unwrap_or("未知层级");
+        let v = self.vertical.as_deref()
+            .map(|key| layer_short_name(key, layers))
+            .unwrap_or("未知层级");
         format!("{}+{}", h, v)
     }
 
     /// 简短标签
-    pub fn short_label(&self, biome_definitions: &[BiomeDefinition]) -> String {
+    pub fn short_label(
+        &self,
+        biome_definitions: &[BiomeDefinition],
+        layers: &[LayerDefinition],
+    ) -> String {
         if let Some(id) = self.horizontal {
             if let Some(biome) = biome_definitions.iter().find(|b| b.id == id) {
                 if let Some(v) = &self.vertical {
-                    return format!("{}·{}", biome.name, layer_short_name(v));
+                    let layer_name = layers.iter()
+                        .find(|l| l.key == *v)
+                        .map(|l| l.short_name.as_str())
+                        .unwrap_or("?");
+                    return format!("{}·{}", biome.name, layer_name);
                 }
             }
         }
@@ -134,15 +148,12 @@ impl BiomeContext {
     }
 }
 
-fn layer_short_name(key: &str) -> &'static str {
-    match key {
-        "space" => "太空",
-        "surface" => "地表",
-        "underground" => "地下",
-        "cavern" => "洞穴",
-        "hell" => "地狱",
-        _ => "?",
-    }
+/// 根据层级 key 获取短名称（从层级定义列表中查找）
+pub fn layer_short_name<'a>(key: &str, layers: &'a [LayerDefinition]) -> &'a str {
+    layers.iter()
+        .find(|l| l.key == key)
+        .map(|l| l.short_name.as_str())
+        .unwrap_or("?")
 }
 
 /// 获取 (x, y) 处的完整环境信息

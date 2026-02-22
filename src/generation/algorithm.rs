@@ -129,6 +129,72 @@ pub struct RuntimeContext<'a> {
 }
 
 // ═══════════════════════════════════════════════════════════
+// 层级查询 API —— 算法从 world.json 读取层级配置
+// ═══════════════════════════════════════════════════════════
+
+impl<'a> RuntimeContext<'a> {
+    /// 查询层级范围（百分比格式，0.0~1.0）
+    ///
+    /// # 示例
+    /// ```ignore
+    /// let (start, end) = ctx.layer_range("surface").unwrap(); // (0.10, 0.30)
+    /// ```
+    pub fn layer_range(&self, key: &str) -> Option<(f64, f64)> {
+        self.profile.layers.iter()
+            .find(|l| l.key == key)
+            .map(|l| (l.start_percent as f64 / 100.0, l.end_percent as f64 / 100.0))
+    }
+
+    /// 查询层级起始（百分比格式，0.0~1.0）
+    ///
+    /// # 示例
+    /// ```ignore
+    /// let top = ctx.layer_start("surface").unwrap(); // 0.10
+    /// ```
+    pub fn layer_start(&self, key: &str) -> Option<f64> {
+        self.profile.layers.iter()
+            .find(|l| l.key == key)
+            .map(|l| l.start_percent as f64 / 100.0)
+    }
+
+    /// 查询层级结束（百分比格式，0.0~1.0）
+    ///
+    /// # 示例
+    /// ```ignore
+    /// let bottom = ctx.layer_end("cavern").unwrap(); // 0.85
+    /// ```
+    pub fn layer_end(&self, key: &str) -> Option<f64> {
+        self.profile.layers.iter()
+            .find(|l| l.key == key)
+            .map(|l| l.end_percent as f64 / 100.0)
+    }
+
+    /// 查询层级范围（像素格式，基于当前世界高度）
+    ///
+    /// 返回 `(start_row, end_row)`，直接可用作 y 坐标范围。
+    ///
+    /// # 示例
+    /// ```ignore
+    /// let (y_top, y_bot) = ctx.layer_range_px("surface").unwrap(); // (120, 360) for 1200h
+    /// ```
+    pub fn layer_range_px(&self, key: &str) -> Option<(u32, u32)> {
+        self.profile.layers.iter()
+            .find(|l| l.key == key)
+            .map(|l| l.bounds_for_height(self.world.height))
+    }
+
+    /// 查询层级起始（像素格式）
+    pub fn layer_start_px(&self, key: &str) -> Option<u32> {
+        self.layer_range_px(key).map(|(s, _)| s)
+    }
+
+    /// 查询层级结束（像素格式）
+    pub fn layer_end_px(&self, key: &str) -> Option<u32> {
+        self.layer_range_px(key).map(|(_, e)| e)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
 // 核心 Trait —— 每个算法模块必须实现
 // ═══════════════════════════════════════════════════════════
 

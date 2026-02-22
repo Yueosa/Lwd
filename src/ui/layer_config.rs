@@ -1,5 +1,6 @@
 use egui::Window;
 
+use crate::config::world::load_world_config;
 use crate::core::layer::LayerDefinition;
 
 /// 配置模式
@@ -78,7 +79,7 @@ pub fn show_layer_config_window(
                     
                     // 按顺序显示每个层级
                     for (display_index, &actual_index) in sorted_indices.iter().enumerate() {
-                        ui.label(&layers[actual_index].key);
+                        ui.label(format!("{} ({})", layers[actual_index].short_name, layers[actual_index].key));
                         
                         let current_start = layers[actual_index].start_percent;
                         let current_end = layers[actual_index].end_percent;
@@ -164,7 +165,16 @@ pub fn show_layer_config_window(
             
             // 提示信息
             ui.label("💡 提示：");
-            ui.label("• 层级顺序从上到下：太空 → 地表 → 地下 → 洞穴 → 地狱");
+            // 动态生成层级顺序提示
+            let layer_order: String = {
+                let mut sorted: Vec<_> = layers.iter().collect();
+                sorted.sort_by_key(|l| l.start_percent);
+                sorted.iter()
+                    .map(|l| l.short_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            };
+            ui.label(format!("• 层级顺序从上到下：{layer_order}"));
             ui.label("• 调整结束值会自动调整下一层级的起始值（智能对齐）");
             ui.label("• 修改会立即应用到可视化");
             
@@ -204,22 +214,13 @@ pub fn show_layer_config_window(
     changed
 }
 
-/// 恢复为默认层级配置
+/// 恢复为默认层级配置（从 world.json 重新读取）
 fn reset_to_default(layers: &mut [LayerDefinition]) {
-    let defaults = &[
-        ("space", 0, 5),
-        ("surface", 5, 25),
-        ("underground", 25, 35),
-        ("cavern", 35, 80),
-        ("hell", 80, 100),
-    ];
-    
-    for layer in layers.iter_mut() {
-        for &(key, start, end) in defaults.iter() {
-            if layer.key == key {
-                layer.start_percent = start;
-                layer.end_percent = end;
-                break;
+    if let Ok(cfg) = load_world_config() {
+        for layer in layers.iter_mut() {
+            if let Some(default) = cfg.layers.get(&layer.key) {
+                layer.start_percent = default.start_percent;
+                layer.end_percent = default.end_percent;
             }
         }
     }

@@ -43,6 +43,10 @@ pub struct LianWorldApp {
 
     // ── world state ──
     world_size: WorldSizeSelection,
+    /// 自定义宽度输入框内容
+    custom_width: String,
+    /// 自定义高度输入框内容
+    custom_height: String,
     world: World,
     world_profile: WorldProfile,
 
@@ -142,6 +146,8 @@ impl LianWorldApp {
             color_lut,
             block_names,
             world_size: saved_size,
+            custom_width: String::new(),
+            custom_height: String::new(),
             world,
             world_profile,
             pipeline,
@@ -179,23 +185,55 @@ impl LianWorldApp {
 
     // ── world size change ───────────────────────────────────
 
-    fn world_size_key(&self) -> &'static str {
+    fn world_size_key(&self) -> &str {
         match self.world_size {
             WorldSizeSelection::Small => "small",
             WorldSizeSelection::Medium => "medium",
             WorldSizeSelection::Large => "large",
+            WorldSizeSelection::Custom => "custom",
         }
+    }
+
+    /// 解析自定义尺寸输入，返回 (width, height)；解析失败返回 None
+    fn parse_custom_size(&self) -> Option<(u32, u32)> {
+        let w = self.custom_width.trim().parse::<u32>().ok().filter(|&v| v > 0)?;
+        let h = self.custom_height.trim().parse::<u32>().ok().filter(|&v| v > 0)?;
+        Some((w, h))
     }
 
     fn apply_world_size_change(&mut self) {
         let target = self.world_size_key();
+        let custom_size = if self.world_size == WorldSizeSelection::Custom {
+            self.parse_custom_size()
+        } else {
+            None
+        };
 
-        if self.world_profile.size.key == target {
+        // 自定义尺寸未填写时不切换
+        if self.world_size == WorldSizeSelection::Custom && custom_size.is_none() {
             return;
         }
 
-        self.world_profile = WorldProfile::from_config(&self.world_cfg, target, None)
-            .expect("world size 配置非法");
+        // 检查是否真的需要切换
+        if self.world_profile.size.key == target {
+            if let Some((cw, ch)) = custom_size {
+                if self.world.width == cw && self.world.height == ch {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+
+        let profile = WorldProfile::from_config(&self.world_cfg, target, custom_size);
+        let profile = match profile {
+            Ok(p) => p,
+            Err(e) => {
+                self.last_status = format!("尺寸配置无效: {e}");
+                return;
+            }
+        };
+        self.world_profile = profile;
         // 重新加载 runtime.json 中的层级配置，避免切换尺寸后丢失
         load_runtime_layers(&mut self.world_profile.layers);
         self.world = self.world_profile.create_world();
@@ -441,6 +479,7 @@ impl LianWorldApp {
                         self.world_size = match snapshot.world_size.as_str() {
                             "medium" => WorldSizeSelection::Medium,
                             "large" => WorldSizeSelection::Large,
+                            "custom" => WorldSizeSelection::Custom,
                             _ => WorldSizeSelection::Small,
                         };
                         self.world_profile = WorldProfile::from_config(
@@ -567,6 +606,7 @@ fn load_runtime_ui_state() -> (WorldSizeSelection, OverlaySettings) {
                 size = match s {
                     "medium" => WorldSizeSelection::Medium,
                     "large" => WorldSizeSelection::Large,
+                    "custom" => WorldSizeSelection::Custom,
                     _ => WorldSizeSelection::Small,
                 };
             }
@@ -612,6 +652,7 @@ fn save_runtime_ui_state(
         WorldSizeSelection::Small => "small",
         WorldSizeSelection::Medium => "medium",
         WorldSizeSelection::Large => "large",
+        WorldSizeSelection::Custom => "custom",
     };
     
     let ui_state = json!({
@@ -730,6 +771,9 @@ impl eframe::App for LianWorldApp {
                 action = show_control_panel(
                     ui,
                     &mut self.world_size,
+                    &mut self.custom_width,
+                    &mut self.custom_height,
+                    &self.world_cfg,
                     &mut self.seed_input,
                     &phase_info,
                     executed,
@@ -1061,7 +1105,9 @@ impl eframe::App for LianWorldApp {
                             .and_then(|id| self.biomes.iter().find(|b| b.id == id))
                             .map(|b| b.name.as_str())
                             .unwrap_or("未分配");
-                        let layer_name = ctx.vertical.as_deref().unwrap_or("?");
+                        let layer_name = ctx.vertical.as_deref()
+                            .map(|key| crate::core::biome::layer_short_name(key, &self.world_profile.layers))
+                            .unwrap_or("?");
                         format!(" | {biome_name}·{layer_name}")
                     } else {
                         String::new()

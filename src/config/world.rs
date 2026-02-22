@@ -23,6 +23,9 @@ pub struct WorldSize {
 pub struct LayerConfig {
     pub start_percent: u8,
     pub end_percent: u8,
+    /// 短名称（用于 UI 标签显示，如 "太空"、"地表"）
+    #[serde(default)]
+    pub short_name: Option<String>,
     pub description: String,
 }
 

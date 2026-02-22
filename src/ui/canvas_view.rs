@@ -498,7 +498,7 @@ pub fn show_canvas(
                     painter.text(
                         label_pos,
                         egui::Align2::LEFT_CENTER,
-                        &layer.key,
+                        &layer.short_name,
                         egui::FontId::proportional(12.0),
                         Color32::from_rgba_unmultiplied(255, 255, 255, 180),
                     );
