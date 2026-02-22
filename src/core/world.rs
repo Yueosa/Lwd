@@ -1,3 +1,5 @@
+use rayon::prelude::*;
+
 use crate::config::world::{WorldConfig, WorldSize};
 use crate::core::layer::{build_layers, LayerDefinition};
 use crate::core::CoreError;
@@ -66,15 +68,31 @@ impl World {
     }
 
     /// 填充矩形区域 [x0, x1) × [y0, y1)
+    ///
+    /// 大区域自动使用 rayon 并行填充。
     pub fn fill_rect(&mut self, x0: u32, y0: u32, x1: u32, y1: u32, block_id: u8) {
-        let xs = x0.min(self.width);
-        let xe = x1.min(self.width);
-        let ys = y0.min(self.height);
-        let ye = y1.min(self.height);
-        for y in ys..ye {
-            let row_start = (y * self.width) as usize;
-            for x in xs..xe {
-                self.tiles[row_start + x as usize] = block_id;
+        let xs = x0.min(self.width) as usize;
+        let xe = x1.min(self.width) as usize;
+        let ys = y0.min(self.height) as usize;
+        let ye = y1.min(self.height) as usize;
+        let w = self.width as usize;
+
+        let area = (xe - xs) * (ye - ys);
+        if area >= 50_000 {
+            // 并行填充
+            self.tiles[ys * w..ye * w]
+                .par_chunks_mut(w)
+                .for_each(|row| {
+                    for x in xs..xe {
+                        row[x] = block_id;
+                    }
+                });
+        } else {
+            for y in ys..ye {
+                let row_start = y * w;
+                for x in xs..xe {
+                    self.tiles[row_start + x] = block_id;
+                }
             }
         }
     }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use eframe::egui;
 use egui::{Color32, FontData, FontDefinitions, FontFamily, TextureHandle};
@@ -9,7 +10,8 @@ use crate::config::world::{load_world_config, WorldConfig};
 use crate::core::biome::{build_biome_definitions, get_biome_context, BiomeDefinition};
 use crate::core::block::{build_block_definitions, BlockDefinition};
 use crate::core::world::{World, WorldProfile};
-use crate::generation::{build_pipeline, GenerationPipeline, WorldSnapshot, export_png};
+use crate::generation::{build_pipeline, GenerationPipeline, WorldSnapshot, export_png,
+    AdaptiveBatchSize, TextureUpdateThrottle};
 use crate::rendering::canvas::{build_color_lut, build_color_map, world_to_color_image};
 use crate::rendering::viewport::ViewportState;
 use crate::ui::algo_config::show_algo_config_window;
@@ -54,8 +56,10 @@ pub struct LianWorldApp {
     pipeline: GenerationPipeline,
     /// 是否正在后台逐帧执行（替代同步 run_all 阻塞 UI）
     running_to_end: bool,
-    /// 增量执行帧计数器（用于降低纹理更新频率）
-    inc_frame_counter: usize,
+    /// 自适应批量大小控制器（替代硬编码 STEPS_PER_FRAME）
+    adaptive_batch: AdaptiveBatchSize,
+    /// 智能纹理更新节流器
+    texture_throttle: Option<TextureUpdateThrottle>,
 
     // ── rendering ──
     viewport: ViewportState,
@@ -131,7 +135,8 @@ impl LianWorldApp {
             world_profile,
             pipeline,
             running_to_end: false,
-            inc_frame_counter: 0,
+            adaptive_batch: AdaptiveBatchSize::new(),
+            texture_throttle: None,
             viewport: ViewportState::default(),
             texture,
             texture_dirty: false,
@@ -749,10 +754,18 @@ impl eframe::App for LianWorldApp {
         self.handle_action(&action);
 
         // ── incremental execution tick ──
-        // 每帧执行若干步骤，避免 run_all 阻塞 UI
+        // 使用自适应批量大小控制器，自动调整每帧步骤数
         if self.running_to_end && !self.pipeline.is_complete() {
-            const STEPS_PER_FRAME: usize = 3;
-            for _ in 0..STEPS_PER_FRAME {
+            // 确保纹理节流器已初始化
+            if self.texture_throttle.is_none() {
+                self.texture_throttle = Some(TextureUpdateThrottle::new(
+                    self.world.width, self.world.height,
+                ));
+            }
+
+            let frame_start = Instant::now();
+            let batch = self.adaptive_batch.batch_size();
+            for _ in 0..batch {
                 if self.pipeline.is_complete() {
                     break;
                 }
@@ -769,24 +782,39 @@ impl eframe::App for LianWorldApp {
                     }
                 }
             }
-            // 增量执行期间，每 5 帧才刷新一次纹理，大幅减少 GPU 上传开销
-            self.inc_frame_counter += 1;
-            let should_refresh = self.pipeline.is_complete() || self.inc_frame_counter % 5 == 0;
-            if should_refresh {
-                self.texture_dirty = true;
+            let frame_elapsed = frame_start.elapsed();
+            self.adaptive_batch.report_frame(frame_elapsed);
+
+            // 智能纹理更新：根据世界大小和帧率自动调节
+            let is_final = self.pipeline.is_complete();
+            if let Some(throttle) = &mut self.texture_throttle {
+                throttle.adjust_interval(self.adaptive_batch.ema_frame_ms());
+                if throttle.tick(is_final) {
+                    self.texture_dirty = true;
+                }
             }
+
+            let batch_ms = frame_elapsed.as_secs_f64() * 1000.0;
             self.last_status = format!(
-                "正在生成… {}/{}",
+                "正在生成… {}/{} (batch={}, {:.1}ms/帧)",
                 self.pipeline.executed_sub_steps(),
-                self.pipeline.total_sub_steps()
+                self.pipeline.total_sub_steps(),
+                batch,
+                batch_ms,
             );
             if self.pipeline.is_complete() {
                 self.running_to_end = false;
-                self.inc_frame_counter = 0;
+                self.adaptive_batch.reset();
+                if let Some(throttle) = &mut self.texture_throttle {
+                    throttle.reset();
+                }
+                let report = self.pipeline.performance_report();
+                eprintln!("{report}");
                 self.last_status = format!(
-                    "全部步骤已完成 ({}/{})",
+                    "全部步骤已完成 ({}/{}) — 总耗时 {:.1}ms",
                     self.pipeline.executed_sub_steps(),
-                    self.pipeline.total_sub_steps()
+                    self.pipeline.total_sub_steps(),
+                    self.pipeline.profiler().total_generation_time().as_secs_f64() * 1000.0,
                 );
             }
             ctx.request_repaint(); // 确保下一帧继续处理

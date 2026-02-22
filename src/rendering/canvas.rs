@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use egui::{Color32, ColorImage};
+use rayon::prelude::*;
 
 use crate::core::block::BlockDefinition;
 use crate::core::world::World;
@@ -26,10 +27,27 @@ pub fn build_color_lut(colors: &HashMap<u8, Color32>) -> [Color32; 256] {
     lut
 }
 
+/// 将世界方块数据转换为颜色图像（rayon 并行按行转换）
 pub fn world_to_color_image(world: &World, lut: &[Color32; 256]) -> ColorImage {
-    let pixels: Vec<Color32> = world.tiles.iter().map(|&t| lut[t as usize]).collect();
+    let w = world.width as usize;
+    let h = world.height as usize;
+    let total = w * h;
+
+    let mut pixels = vec![Color32::TRANSPARENT; total];
+
+    // 按行并行：每行独立做 LUT 查表
+    pixels
+        .par_chunks_mut(w)
+        .enumerate()
+        .for_each(|(y, row_pixels)| {
+            let row_start = y * w;
+            for x in 0..w {
+                row_pixels[x] = lut[world.tiles[row_start + x] as usize];
+            }
+        });
+
     ColorImage {
-        size: [world.width as usize, world.height as usize],
+        size: [w, h],
         pixels,
     }
 }

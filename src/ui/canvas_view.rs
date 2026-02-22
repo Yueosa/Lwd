@@ -1,4 +1,5 @@
 use egui::{Color32, ColorImage, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2};
+use rayon::prelude::*;
 
 use crate::core::biome::{BiomeDefinition, BiomeMap};
 use crate::core::layer::LayerDefinition;
@@ -10,7 +11,7 @@ pub struct HoverInfo {
     pub y: u32,
 }
 
-/// 从 2D BiomeMap 生成半透明 overlay 纹理
+/// 从 2D BiomeMap 生成半透明 overlay 纹理（rayon 并行按行生成）
 fn biome_overlay_image(
     biome_map: &BiomeMap,
     biome_definitions: &[BiomeDefinition],
@@ -25,14 +26,19 @@ fn biome_overlay_image(
         biome_lut[bdef.id as usize] = Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
     }
 
+    let data = biome_map.data();
     let mut pixels = vec![Color32::TRANSPARENT; w * h];
-    for y in 0..h {
-        let row = y * w;
-        for x in 0..w {
-            let bid = biome_map.get(x as u32, y as u32);
-            pixels[row + x] = biome_lut[bid as usize];
-        }
-    }
+
+    // 按行并行：每行独立做 LUT 查表
+    pixels
+        .par_chunks_mut(w)
+        .enumerate()
+        .for_each(|(y, row_pixels)| {
+            let row_start = y * w;
+            for x in 0..w {
+                row_pixels[x] = biome_lut[data[row_start + x] as usize];
+            }
+        });
 
     ColorImage {
         size: [w, h],

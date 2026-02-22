@@ -30,6 +30,8 @@
 //! });
 //! ```
 
+use rayon::prelude::*;
+
 use super::biome::{BiomeId, BiomeMap};
 
 // ═══════════════════════════════════════════════════════════
@@ -159,7 +161,9 @@ impl BoundingBox {
 /// 每种形状实现此 trait，提供：
 /// - `contains(x, y)` 判定点是否在形状内部
 /// - `bounding_box()` 返回轴对齐包围盒（用于遍历优化和 UI 预览）
-pub trait Shape {
+///
+/// 要求 `Sync` 以支持 rayon 并行填充。
+pub trait Shape: Sync {
     /// 判定 (x, y) 是否在形状内部
     fn contains(&self, x: i32, y: i32) -> bool;
 
@@ -413,7 +417,12 @@ impl<T: Shape + Sized> ShapeCombine for T {}
 // 填充函数 —— 将形状应用到 BiomeMap
 // ═══════════════════════════════════════════════════════════
 
+/// 自动判断是否值得并行化的像素数阈值
+const PARALLEL_PIXEL_THRESHOLD: i64 = 50_000;
+
 /// 将形状填充到 BiomeMap（无条件覆写）
+///
+/// 自动根据区域大小切换串行/并行路径。
 pub fn fill_biome(shape: &dyn Shape, bm: &mut BiomeMap, biome: BiomeId) {
     let bb = shape.bounding_box();
     let x0 = bb.x_min.max(0);
@@ -421,6 +430,18 @@ pub fn fill_biome(shape: &dyn Shape, bm: &mut BiomeMap, biome: BiomeId) {
     let x1 = bb.x_max.min(bm.width as i32);
     let y1 = bb.y_max.min(bm.height as i32);
 
+    let area = (x1 - x0) as i64 * (y1 - y0) as i64;
+    if area >= PARALLEL_PIXEL_THRESHOLD {
+        fill_biome_parallel(shape, bm, biome, x0, y0, x1, y1);
+    } else {
+        fill_biome_serial(shape, bm, biome, x0, y0, x1, y1);
+    }
+}
+
+fn fill_biome_serial(
+    shape: &dyn Shape, bm: &mut BiomeMap, biome: BiomeId,
+    x0: i32, y0: i32, x1: i32, y1: i32,
+) {
     for y in y0..y1 {
         for x in x0..x1 {
             if shape.contains(x, y) {
@@ -430,9 +451,33 @@ pub fn fill_biome(shape: &dyn Shape, bm: &mut BiomeMap, biome: BiomeId) {
     }
 }
 
+fn fill_biome_parallel(
+    shape: &dyn Shape, bm: &mut BiomeMap, biome: BiomeId,
+    x0: i32, y0: i32, x1: i32, y1: i32,
+) {
+    let w = bm.width as usize;
+    let data = bm.data_mut();
+    // 按行并行：每行的写入互不竞争
+    let rows: Vec<usize> = (y0 as usize..y1 as usize).collect();
+    let row_slices = data.chunks_mut(w).enumerate()
+        .filter(|(y, _)| *y >= y0 as usize && *y < y1 as usize)
+        .map(|(_y, row)| row)
+        .collect::<Vec<_>>();
+
+    row_slices.into_par_iter().enumerate().for_each(|(ri, row)| {
+        let y = rows[ri] as i32;
+        for x in x0..x1 {
+            if shape.contains(x, y) {
+                row[x as usize] = biome;
+            }
+        }
+    });
+}
+
 /// 将形状条件填充到 BiomeMap
 ///
 /// `filter` 闭包接收 (当前格子的 BiomeId)，返回 true 才填充。
+/// 自动根据区域大小切换串行/并行路径。
 ///
 /// # 示例
 /// ```ignore
@@ -446,7 +491,7 @@ pub fn fill_biome_if(
     shape: &dyn Shape,
     bm: &mut BiomeMap,
     biome: BiomeId,
-    filter: impl Fn(BiomeId) -> bool,
+    filter: impl Fn(BiomeId) -> bool + Sync,
 ) {
     let bb = shape.bounding_box();
     let x0 = bb.x_min.max(0);
@@ -454,6 +499,18 @@ pub fn fill_biome_if(
     let x1 = bb.x_max.min(bm.width as i32);
     let y1 = bb.y_max.min(bm.height as i32);
 
+    let area = (x1 - x0) as i64 * (y1 - y0) as i64;
+    if area >= PARALLEL_PIXEL_THRESHOLD {
+        fill_biome_if_parallel(shape, bm, biome, &filter, x0, y0, x1, y1);
+    } else {
+        fill_biome_if_serial(shape, bm, biome, &filter, x0, y0, x1, y1);
+    }
+}
+
+fn fill_biome_if_serial(
+    shape: &dyn Shape, bm: &mut BiomeMap, biome: BiomeId,
+    filter: &(impl Fn(BiomeId) -> bool + Sync), x0: i32, y0: i32, x1: i32, y1: i32,
+) {
     for y in y0..y1 {
         for x in x0..x1 {
             if shape.contains(x, y) {
@@ -466,14 +523,40 @@ pub fn fill_biome_if(
     }
 }
 
+fn fill_biome_if_parallel(
+    shape: &dyn Shape, bm: &mut BiomeMap, biome: BiomeId,
+    filter: &(impl Fn(BiomeId) -> bool + Sync), x0: i32, y0: i32, x1: i32, y1: i32,
+) {
+    let w = bm.width as usize;
+    let data = bm.data_mut();
+    let rows: Vec<usize> = (y0 as usize..y1 as usize).collect();
+    let row_slices = data.chunks_mut(w).enumerate()
+        .filter(|(y, _)| *y >= y0 as usize && *y < y1 as usize)
+        .map(|(_y, row)| row)
+        .collect::<Vec<_>>();
+
+    row_slices.into_par_iter().enumerate().for_each(|(ri, row)| {
+        let y = rows[ri] as i32;
+        for x in x0..x1 {
+            if shape.contains(x, y) {
+                let current = row[x as usize];
+                if filter(current) {
+                    row[x as usize] = biome;
+                }
+            }
+        }
+    });
+}
+
 /// 检查形状区域内是否全部满足条件（用于放置前的空白验证）
 ///
 /// `step` 为采样步长（> 1 可加速大区域检查）
+/// 自动根据区域大小切换串行/并行路径，并行模式支持提前退出。
 pub fn shape_all_match(
     shape: &dyn Shape,
     bm: &BiomeMap,
     step: i32,
-    predicate: impl Fn(BiomeId) -> bool,
+    predicate: impl Fn(BiomeId) -> bool + Sync,
 ) -> bool {
     let bb = shape.bounding_box();
     let x0 = bb.x_min.max(0);
@@ -482,18 +565,38 @@ pub fn shape_all_match(
     let y1 = bb.y_max.min(bm.height as i32);
     let step = step.max(1);
 
-    let mut y = y0;
-    while y < y1 {
-        let mut x = x0;
-        while x < x1 {
-            if shape.contains(x, y) && !predicate(bm.get(x as u32, y as u32)) {
-                return false;
+    let area = ((x1 - x0) as i64 / step as i64) * ((y1 - y0) as i64 / step as i64);
+    let data = bm.data();
+    let w = bm.width as usize;
+
+    if area >= PARALLEL_PIXEL_THRESHOLD {
+        // 并行按行检查，支持提前退出
+        let ys: Vec<i32> = (0..).map(|i| y0 + i * step).take_while(|&y| y < y1).collect();
+        ys.par_iter().all(|&y| {
+            let row_start = y as usize * w;
+            let mut x = x0;
+            while x < x1 {
+                if shape.contains(x, y) && !predicate(data[row_start + x as usize]) {
+                    return false;
+                }
+                x += step;
             }
-            x += step;
+            true
+        })
+    } else {
+        let mut y = y0;
+        while y < y1 {
+            let mut x = x0;
+            while x < x1 {
+                if shape.contains(x, y) && !predicate(bm.get(x as u32, y as u32)) {
+                    return false;
+                }
+                x += step;
+            }
+            y += step;
         }
-        y += step;
+        true
     }
-    true
 }
 
 // ═══════════════════════════════════════════════════════════

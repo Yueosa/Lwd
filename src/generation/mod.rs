@@ -1,4 +1,5 @@
 pub mod algorithm;
+pub mod optimizer;
 pub mod pipeline;
 pub mod snapshot;
 
@@ -6,6 +7,7 @@ use crate::algorithms::biome_division::BiomeDivisionAlgorithm;
 use crate::core::biome::BiomeDefinition;
 
 pub use algorithm::{PhaseAlgorithm, PhaseMeta, StepMeta, ParamDef, ParamType};
+pub use optimizer::{AdaptiveBatchSize, PerfProfiler, TextureUpdateThrottle};
 pub use pipeline::{GenerationPipeline, PhaseInfo, StepStatus};
 pub use snapshot::{WorldSnapshot, export_png};
 

@@ -1,3 +1,5 @@
+use rayon::prelude::*;
+
 use crate::config::biome::BiomesConfig;
 use crate::core::layer::LayerDefinition;
 
@@ -74,19 +76,25 @@ impl BiomeMap {
         &self.data
     }
 
+    /// 返回底层数据的可变引用（用于并行写入）
+    pub fn data_mut(&mut self) -> &mut [BiomeId] {
+        &mut self.data
+    }
+
     /// 统计指定 biome 在某个 x 范围内的格子数（用于判定密度）
+    ///
+    /// 使用 rayon 并行按行统计。
     pub fn count_biome_in_x_range(&self, biome: BiomeId, x_start: u32, x_end: u32) -> usize {
-        let xs = x_start.min(self.width);
-        let xe = x_end.min(self.width);
-        let mut count = 0usize;
-        for y in 0..self.height {
-            for x in xs..xe {
-                if self.data[(y * self.width + x) as usize] == biome {
-                    count += 1;
-                }
-            }
-        }
-        count
+        let xs = x_start.min(self.width) as usize;
+        let xe = x_end.min(self.width) as usize;
+        let w = self.width as usize;
+
+        self.data
+            .par_chunks(w)
+            .map(|row| {
+                row[xs..xe].iter().filter(|&&b| b == biome).count()
+            })
+            .sum()
     }
 }
 

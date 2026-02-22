@@ -5,6 +5,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::time::Instant;
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -15,6 +16,7 @@ use crate::core::geometry::ShapeRecord;
 use crate::core::world::{World, WorldProfile};
 
 use super::algorithm::{PhaseAlgorithm, RuntimeContext};
+use super::optimizer::PerfProfiler;
 
 // ═══════════════════════════════════════════════════════════
 // UI 信息快照（只读，供控制面板展示）
@@ -81,6 +83,8 @@ pub struct GenerationPipeline {
     cached_phase_info: Vec<PhaseInfo>,
     cached_phase_info_executed: usize,
     phase_info_dirty: bool,
+    /// 性能分析器
+    profiler: PerfProfiler,
 }
 
 impl GenerationPipeline {
@@ -99,6 +103,7 @@ impl GenerationPipeline {
             cached_phase_info: Vec::new(),
             cached_phase_info_executed: usize::MAX,
             phase_info_dirty: true,
+            profiler: PerfProfiler::new(),
         }
     }
 
@@ -225,6 +230,12 @@ impl GenerationPipeline {
 
         let step_count = self.step_counts[self.current_phase];
 
+        // 获取步骤名称用于性能记录
+        let step_name = {
+            let meta = self.algorithms[self.current_phase].meta();
+            format!("{} - {}", meta.name, meta.steps[self.current_sub].name)
+        };
+
         let mut ctx = RuntimeContext {
             world,
             profile,
@@ -236,12 +247,16 @@ impl GenerationPipeline {
             shape_log: &mut step_shapes,
         };
 
+        // 带计时的步骤执行
+        let t0 = Instant::now();
         self.algorithms[self.current_phase]
             .execute(self.current_sub, &mut ctx)
             .map_err(|e| {
                 let meta = self.algorithms[self.current_phase].meta();
                 format!("{}: {e}", meta.name)
             })?;
+        let elapsed = t0.elapsed();
+        self.profiler.record_step(flat_index, &step_name, elapsed);
 
         // 保存此步骤的形状记录
         self.shape_logs.insert(flat_index, step_shapes);
@@ -337,6 +352,7 @@ impl GenerationPipeline {
             algo.on_reset();
         }
         self.phase_info_dirty = true;
+        self.profiler.reset();
     }
 
     /// 从当前位置执行到底
@@ -346,10 +362,23 @@ impl GenerationPipeline {
         profile: &WorldProfile,
         blocks: &[BlockDefinition],
     ) -> Result<(), String> {
+        self.profiler.start_generation();
         while !self.is_complete() {
             self.step_forward_sub(world, profile, blocks)?;
         }
         Ok(())
+    }
+
+    // ── 性能分析器访问 ─────────────────────────────
+
+    /// 获取性能分析器的只读引用
+    pub fn profiler(&self) -> &PerfProfiler {
+        &self.profiler
+    }
+
+    /// 获取性能分析报告
+    pub fn performance_report(&self) -> String {
+        self.profiler.report()
     }
 
     // ── 快照支持 ────────────────────────────────────────────
