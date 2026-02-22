@@ -8,6 +8,8 @@ version = "1.0.0"
 dependencies = [
  "eframe",
  "egui",
+ "egui_glow",
+ "glow",
  "image 0.25.9",
  "noise",
  "rand 0.8.5",
