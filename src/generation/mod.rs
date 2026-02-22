@@ -5,6 +5,7 @@ pub mod snapshot;
 
 use crate::algorithms::biome_division::BiomeDivisionAlgorithm;
 use crate::core::biome::BiomeDefinition;
+use crate::core::layer::LayerDefinition;
 
 pub use algorithm::{PhaseAlgorithm, PhaseMeta, StepMeta, ParamDef, ParamType};
 pub use optimizer::{AdaptiveBatchSize, PerfProfiler, TextureUpdateThrottle};
@@ -21,11 +22,12 @@ pub use snapshot::{WorldSnapshot, export_png};
 pub fn build_pipeline(
     seed: u64,
     biome_definitions: Vec<BiomeDefinition>,
+    layer_definitions: &[LayerDefinition],
 ) -> GenerationPipeline {
     let mut pipeline = GenerationPipeline::new(seed, biome_definitions.clone());
 
     // ── Phase 1: 环境判定 ──
-    pipeline.register(Box::new(BiomeDivisionAlgorithm::new(&biome_definitions)));
+    pipeline.register(Box::new(BiomeDivisionAlgorithm::new(&biome_definitions, layer_definitions)));
 
     // ── Phase 2+: 未来在此注册更多算法模块 ──
 

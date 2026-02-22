@@ -125,7 +125,7 @@ impl LianWorldApp {
         let world = world_profile.create_world();
 
         let seed = rand::random::<u64>();
-        let pipeline = build_pipeline(seed, biomes.clone());
+        let pipeline = build_pipeline(seed, biomes.clone(), &world_profile.layers);
 
         let image = world_to_color_image(&world, &color_lut);
         let texture = Some(cc.egui_ctx.load_texture(

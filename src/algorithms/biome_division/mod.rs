@@ -4,6 +4,7 @@
 //! 引擎不感知此模块内部逻辑，只通过 `meta()` / `execute()` / `get_params()` / `set_params()` 交互。
 
 use crate::core::biome::{BiomeDefinition, BiomeId};
+use crate::core::layer::LayerDefinition;
 use crate::generation::algorithm::{
     ParamDef, ParamType, PhaseAlgorithm, PhaseMeta, RuntimeContext, StepMeta,
 };
@@ -39,15 +40,18 @@ fn biome_id_by_key(defs: &[BiomeDefinition], key: &str) -> Option<BiomeId> {
 pub struct BiomeDivisionAlgorithm {
     /// 环境定义列表（用于运行时动态查找）
     biome_definitions: Vec<BiomeDefinition>,
+    /// 层级定义（用于参数默认值计算）
+    layer_definitions: Vec<LayerDefinition>,
     /// 可调参数
     pub params: BiomeDivisionParams,
 }
 
 impl BiomeDivisionAlgorithm {
-    pub fn new(biome_definitions: &[BiomeDefinition]) -> Self {
+    pub fn new(biome_definitions: &[BiomeDefinition], layer_definitions: &[LayerDefinition]) -> Self {
         Self {
             biome_definitions: biome_definitions.to_vec(),
-            params: BiomeDivisionParams::default(),
+            layer_definitions: layer_definitions.to_vec(),
+            params: BiomeDivisionParams::from_layers(layer_definitions),
         }
     }
     
@@ -169,7 +173,9 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     doc_url: None,
                 },
             ],
-            params: vec![
+            params: {
+                let d = BiomeDivisionParams::from_layers(&self.layer_definitions);
+                vec![
                 ParamDef {
                     key: "ocean_left_width".to_string(),
                     name: "左侧海洋宽度".to_string(),
@@ -189,17 +195,17 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                 ParamDef {
                     key: "ocean_top_limit".to_string(),
                     name: "海洋上边界".to_string(),
-                    description: "海洋区域上边界（世界高度百分比，0.0=顶部。地表层起点0.10）".to_string(),
+                    description: "海洋区域上边界（世界高度百分比，默认值=地表层起点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.10),
+                    default: serde_json::json!(d.ocean_top_limit),
                     group: Some("海洋生成".to_string()),
                 },
                 ParamDef {
                     key: "ocean_bottom_limit".to_string(),
                     name: "海洋下边界".to_string(),
-                    description: "海洋区域下边界（世界高度百分比，1.0=底部。地下层终点0.40）".to_string(),
+                    description: "海洋区域下边界（世界高度百分比，默认值=地下层终点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.40),
+                    default: serde_json::json!(d.ocean_bottom_limit),
                     group: Some("海洋生成".to_string()),
                 },
                 ParamDef {
@@ -221,17 +227,17 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                 ParamDef {
                     key: "jungle_top_limit".to_string(),
                     name: "丛林上边界".to_string(),
-                    description: "丛林实际生成的顶部限制（0.0=世界顶，0.10=地表层顶）".to_string(),
+                    description: "丛林实际生成的顶部限制（默认值=地表层起点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.10),
+                    default: serde_json::json!(d.jungle_top_limit),
                     group: Some("丛林生成".to_string()),
                 },
                 ParamDef {
                     key: "jungle_bottom_limit".to_string(),
                     name: "丛林下边界".to_string(),
-                    description: "丛林实际生成的底部限制（0.85=洞穴层底，1.0=地狱顶）".to_string(),
+                    description: "丛林实际生成的底部限制（默认值=洞穴层终点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.85),
+                    default: serde_json::json!(d.jungle_bottom_limit),
                     group: Some("丛林生成".to_string()),
                 },
                 ParamDef {
@@ -261,17 +267,17 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                 ParamDef {
                     key: "snow_top_limit".to_string(),
                     name: "雪原上边界".to_string(),
-                    description: "雪原顶部边界（0.0=世界顶，0.10=地表层顶）".to_string(),
+                    description: "雪原顶部边界（默认值=地表层起点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.1),
+                    default: serde_json::json!(d.snow_top_limit),
                     group: Some("雪原生成".to_string()),
                 },
                 ParamDef {
                     key: "snow_bottom_limit".to_string(),
                     name: "雪原下边界".to_string(),
-                    description: "雪原底部边界（用于计算实际深度，0.85=洞穴层底）".to_string(),
+                    description: "雪原底部边界基准（默认值=洞穴层终点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.85),
+                    default: serde_json::json!(d.snow_bottom_limit),
                     group: Some("雪原生成".to_string()),
                 },
                 ParamDef {
@@ -317,17 +323,17 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                 ParamDef {
                     key: "desert_surface_top_limit".to_string(),
                     name: "沙漠地表上边界".to_string(),
-                    description: "沙漠地表顶部边界（0.10=地表层顶）".to_string(),
+                    description: "沙漠地表顶部边界（默认值=地表层起点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.10),
+                    default: serde_json::json!(d.desert_surface_top_limit),
                     group: Some("沙漠生成".to_string()),
                 },
                 ParamDef {
                     key: "desert_surface_bottom_limit".to_string(),
                     name: "沙漠地表下边界".to_string(),
-                    description: "沙漠地表底部边界（0.40=地下层底）".to_string(),
+                    description: "沙漠地表底部边界（默认值=地下层终点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.40),
+                    default: serde_json::json!(d.desert_surface_bottom_limit),
                     group: Some("沙漠生成".to_string()),
                 },
                 ParamDef {
@@ -349,17 +355,17 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                 ParamDef {
                     key: "desert_true_top_limit".to_string(),
                     name: "真沙漠上边界".to_string(),
-                    description: "真沙漠椭圆顶部（0.30=地下层顶）".to_string(),
+                    description: "真沙漠椭圆顶部（默认值=地下层起点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.30),
+                    default: serde_json::json!(d.desert_true_top_limit),
                     group: Some("沙漠生成".to_string()),
                 },
                 ParamDef {
                     key: "desert_true_bottom_limit".to_string(),
                     name: "真沙漠下边界".to_string(),
-                    description: "真沙漠底部边界基准（0.85=洞穴层底）".to_string(),
+                    description: "真沙漠底部边界基准（默认值=洞穴层终点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.85),
+                    default: serde_json::json!(d.desert_true_bottom_limit),
                     group: Some("沙漠生成".to_string()),
                 },
                 ParamDef {
@@ -397,17 +403,17 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                 ParamDef {
                     key: "crimson_top_limit".to_string(),
                     name: "猩红上边界".to_string(),
-                    description: "猩红顶部边界（0.10=地表层顶）".to_string(),
+                    description: "猩红顶部边界（默认值=地表层起点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.10),
+                    default: serde_json::json!(d.crimson_top_limit),
                     group: Some("猩红生成".to_string()),
                 },
                 ParamDef {
                     key: "crimson_bottom_limit".to_string(),
                     name: "猩红下边界".to_string(),
-                    description: "猩红底部边界（0.40=地下层底）".to_string(),
+                    description: "猩红底部边界（默认值=地下层终点）".to_string(),
                     param_type: ParamType::Float { min: 0.0, max: 1.0 },
-                    default: serde_json::json!(0.40),
+                    default: serde_json::json!(d.crimson_bottom_limit),
                     group: Some("猩红生成".to_string()),
                 },
                 ParamDef {
@@ -426,7 +432,8 @@ impl PhaseAlgorithm for BiomeDivisionAlgorithm {
                     default: serde_json::json!(100),
                     group: Some("森林填充".to_string()),
                 },
-            ],
+            ]
+            },
         }
     }
 

@@ -15,12 +15,15 @@ pub fn execute(algo: &BiomeDivisionAlgorithm, ctx: &mut RuntimeContext) -> Resul
     let w = ctx.world.width as i32;
     let h = ctx.world.height as i32;
     
+    // 读取层级边界（在取可变借用之前）
+    let space_bottom = ctx.layer_end_px("space").ok_or("未找到 space 层级定义")? as i32;
+    let hell_top = ctx.layer_start_px("hell").ok_or("未找到 hell 层级定义")? as i32;
+    
     // 初始化 BiomeMap（全部填充为 UNASSIGNED）
     *ctx.biome_map = Some(BiomeMap::new_filled(w as u32, h as u32, BIOME_UNASSIGNED));
     let bm = ctx.biome_map.as_mut().unwrap();
     
-    // 太空层：0% ~ 10%
-    let space_bottom = (h as f64 * 0.10) as i32;
+    // 太空层
     let space_rect = Rect::new(0, 0, w, space_bottom);
     geometry::fill_biome(&space_rect, bm, space_id);
     ctx.shape_log.push(ShapeRecord {
@@ -30,8 +33,7 @@ pub fn execute(algo: &BiomeDivisionAlgorithm, ctx: &mut RuntimeContext) -> Resul
         params: ShapeParams::from_rect(&space_rect),
     });
     
-    // 地狱层：85% ~ 100%
-    let hell_top = (h as f64 * 0.85) as i32;
+    // 地狱层
     let hell_rect = Rect::new(0, hell_top, w, h);
     geometry::fill_biome(&hell_rect, bm, hell_id);
     ctx.shape_log.push(ShapeRecord {

@@ -10,12 +10,13 @@ pub fn execute(algo: &BiomeDivisionAlgorithm, ctx: &mut RuntimeContext) -> Resul
     let forest_id = algo.get_biome_id("forest")
         .ok_or("未找到 forest 环境定义")?;
     
+    // 读取层级边界（在取可变借用之前）
+    let y_top = ctx.layer_start_px("surface").ok_or("未找到 surface 层级定义")? as i32;
+    let y_bottom = ctx.layer_end_px("underground").ok_or("未找到 underground 层级定义")? as i32;
+    
     let bm = ctx.biome_map.as_mut().ok_or("需先执行海洋生成")?;
     let w = bm.width as i32;
-    let h = bm.height as i32;
-    
-    let y_top = (h as f64 * 0.10) as i32;
-    let y_bottom = (h as f64 * 0.40) as i32;
+    let _h = bm.height as i32;
     let center_x = w / 2;
     let half_width = (w as f64 * algo.params.forest_width_ratio) as i32;
     

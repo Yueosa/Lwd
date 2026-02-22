@@ -14,14 +14,16 @@ pub fn execute(algo: &BiomeDivisionAlgorithm, ctx: &mut RuntimeContext) -> Resul
     let crimson_id = algo.get_biome_id("crimson")
         .ok_or("未找到 crimson 环境定义")?;
     
+    // 读取层级边界（在取可变借用之前）
+    let layer_top = ctx.layer_start_px("surface").ok_or("未找到 surface 层级定义")? as i32;
+    let layer_bottom = ctx.layer_end_px("underground").ok_or("未找到 underground 层级定义")? as i32;
+    let scan_y = ((layer_top as u32) + (layer_bottom as u32)) / 2;
+    
     let bm = ctx.biome_map.as_mut().ok_or("需先执行海洋生成")?;
     let w = bm.width as i32;
     let h = bm.height as i32;
     
     let threshold = algo.params.forest_fill_merge_threshold as i32;
-    
-    let layer_top = (h as f64 * 0.10) as i32;
-    let layer_bottom = (h as f64 * 0.40).min(h as f64) as i32;
     
     // ── 计算真沙漠槽位，排除其上方地表沙漠参与扩散 ──
     let mut true_desert_ranges: Vec<(i32, i32)> = Vec::new(); // (x_min, x_max)
@@ -43,8 +45,8 @@ pub fn execute(algo: &BiomeDivisionAlgorithm, ctx: &mut RuntimeContext) -> Resul
         bid == desert_surface_id || bid == crimson_id
     };
     
-    // ── 阶段 1：在 y=25% 扫描，判断哪些沙漠/猩红需要扩散 ──
-    let scan_y = (h as f64 * 0.25) as u32;
+    // ── 阶段 1：在 y=中间扫描线 扫描，判断哪些沙漠/猩红需要扩散 ──
+    // scan_y 已在上方从层级配置计算
     
     struct Seg {
         biome: BiomeId,
